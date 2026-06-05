@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.2.9"
+SCRIPT_VERSION="3.2.10"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -265,8 +265,26 @@ is_host_like(){
   return 0
 }
 
+normalize_host_prompt_value(){
+  # Accept plain hosts plus common SSH forms users paste by mistake:
+  #   root@1.2.3.4, root@1.2.3.4:22, 1.2.3.4:22, [IPv6]:22
+  # The port/user part is ignored here; ssh_normalize_vars can preserve it when
+  # values come from a profile. This helper returns only the host portion.
+  local v="$1"
+  v="${v//$'\r'/}"
+  v="${v//$'\n'/}"
+  v="${v//[[:space:]]/}"
+  [[ "$v" == *@* ]] && v="${v##*@}"
+  if [[ "$v" =~ ^\[([^]]+)\](:[0-9]+)?$ ]]; then
+    v="${BASH_REMATCH[1]}"
+  elif [[ "$v" =~ ^([A-Za-z0-9.-]+):([0-9]+)$ ]]; then
+    v="${BASH_REMATCH[1]}"
+  fi
+  printf '%s' "$v"
+}
+
 prompt_host(){
-  # Accept IPv4, IPv6, or DNS name.
+  # Accept IPv4, IPv6, DNS name, or pasted SSH endpoint; echo only the host.
   local prompt="$1" default="${2:-}"
   local v=""
   while true; do
@@ -276,13 +294,13 @@ prompt_host(){
     else
       read -rp "${prompt}: " v || true
     fi
-    v="${v//$'\r'/}"
-    v="${v//$'\n'/}"
-    v="${v//[[:space:]]/}"
+    v="$(normalize_host_prompt_value "$v")"
     if is_ipv4 "$v" || is_ipv6 "$v" || is_host_like "$v"; then
       echo "$v"; return 0
     fi
-    warn "Invalid host. Use an IPv4, IPv6, or DNS name."
+    # prompt_* helpers are often used through command substitution; diagnostics
+    # must go to stderr so warning text is never captured into variables.
+    warn "Invalid host. Use an IPv4, IPv6, or DNS name." >&2
   done
 }
 
@@ -300,7 +318,7 @@ prompt_ipv6(){
     if is_ipv6 "$v"; then
       echo "$v"; return 0
     fi
-    warn "Invalid IPv6. Example: 2001:db8::1"
+    warn "Invalid IPv6. Example: 2001:db8::1" >&2
   done
 }
 
@@ -349,7 +367,7 @@ prompt_nonempty(){
     if [[ -n "$v" ]]; then
       echo "$v"; return 0
     fi
-    warn "Value cannot be empty."
+    warn "Value cannot be empty." >&2
   done
 }
 
@@ -367,7 +385,7 @@ prompt_ipv4(){
     if is_ipv4 "$v"; then
       echo "$v"; return 0
     fi
-    warn "Invalid IPv4. Example: 31.25.235.197"
+    warn "Invalid IPv4. Example: 31.25.235.197" >&2
   done
 }
 
@@ -385,7 +403,7 @@ prompt_port(){
     if is_port "$v"; then
       echo "$v"; return 0
     fi
-    warn "Port must be 1..65535"
+    warn "Port must be 1..65535" >&2
   done
 }
 
@@ -399,7 +417,7 @@ prompt_mtu(){
     if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 576 && v <= 1500 )); then
       echo "$v"; return 0
     fi
-    warn "MTU must be between 576 and 1500."
+    warn "MTU must be between 576 and 1500." >&2
   done
 }
 
@@ -413,7 +431,7 @@ prompt_keepalive(){
     if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 0 && v <= 60 )); then
       echo "$v"; return 0
     fi
-    warn "Keepalive must be between 0 and 60."
+    warn "Keepalive must be between 0 and 60." >&2
   done
 }
 
@@ -426,7 +444,7 @@ prompt_yesno(){
     case "$ans" in
       Y|y|YES|yes) echo "Y"; return 0 ;;
       N|n|NO|no)   echo "N"; return 0 ;;
-      *) warn "Please answer Y or N." ;;
+      *) warn "Please answer Y or N." >&2 ;;
     esac
   done
 }
@@ -454,7 +472,7 @@ read_choice(){
         return 0
       fi
     done
-    warn "Invalid."
+    warn "Invalid." >&2
   done
 }
 

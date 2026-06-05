@@ -45,8 +45,11 @@ ssh_known_host_target_for(){
 }
 
 ssh_forget_known_host_for(){
-  # Remove stale host keys for this endpoint from AZHDAR's own known_hosts file only.
-  local host="$1" port="${2:-22}" kh="${3:-}" target
+  # Remove stale host keys for this endpoint. AZHDAR uses an isolated
+  # known_hosts file, but after a VPS rebuild users often also have the old
+  # signature in ~/.ssh/known_hosts; prune that exact host/port too so the next
+  # interactive SSH attempt is not blocked by REMOTE HOST IDENTIFICATION errors.
+  local host="$1" port="${2:-22}" kh="${3:-}" target f
   [[ -n "$host" ]] || return 0
   [[ -n "$kh" ]] || kh="$(ssh_known_hosts_file_for "$host" "$port")"
   mkdir -p "$(dirname "$kh")" >/dev/null 2>&1 || true
@@ -57,6 +60,17 @@ ssh_forget_known_host_for(){
     ssh-keygen -R "$target" -f "$kh" >/dev/null 2>&1 || true
     # Also remove plain host form for compatibility with older AZHDAR builds.
     ssh-keygen -R "$host" -f "$kh" >/dev/null 2>&1 || true
+
+    if [[ "${AZHDAR_PRUNE_USER_KNOWN_HOSTS:-1}" == "1" ]]; then
+      local -a kh_files=()
+      [[ -n "${HOME:-}" ]] && kh_files+=("${HOME}/.ssh/known_hosts" "${HOME}/.ssh/known_hosts2")
+      kh_files+=("/root/.ssh/known_hosts" "/root/.ssh/known_hosts2")
+      for f in "${kh_files[@]}"; do
+        [[ -f "$f" && "$f" != "$kh" ]] || continue
+        ssh-keygen -R "$target" -f "$f" >/dev/null 2>&1 || true
+        ssh-keygen -R "$host" -f "$f" >/dev/null 2>&1 || true
+      done
+    fi
   else
     # Conservative fallback: keep the file but empty it for this profile endpoint.
     : >"$kh" 2>/dev/null || true
@@ -66,7 +80,9 @@ ssh_forget_known_host_for(){
 ssh_prepare_known_hosts_for(){
   # Refresh and save the current SSH host key before connecting.
   # This prevents 'REMOTE HOST IDENTIFICATION HAS CHANGED' after VPS rebuilds,
-  # provider host-key rotation, or IP reuse. It touches only AZHDAR's own file.
+  # provider host-key rotation, or IP reuse. It also clears the exact endpoint
+  # from the user's known_hosts by default, because rebuilt OUT servers commonly
+  # keep the same IP with a new SSH signature.
   local host="$1" port="${2:-22}" kh="${3:-}" tmp=""
   [[ -n "$host" ]] || return 0
   is_port "$port" || port="22"
@@ -75,11 +91,14 @@ ssh_prepare_known_hosts_for(){
   touch "$kh" >/dev/null 2>&1 || true
   chmod 600 "$kh" >/dev/null 2>&1 || true
 
+  # Clear stale signatures first. If ssh-keyscan fails, ssh(1) can still accept
+  # the new key into AZHDAR's isolated file on the next connection attempt.
+  ssh_forget_known_host_for "$host" "$port" "$kh" >/dev/null 2>&1 || true
+
   have_cmd ssh-keyscan || return 0
   tmp="$(mktemp 2>/dev/null || printf '/tmp/azhdar-kh-%s' "$$")"
   : >"$tmp" 2>/dev/null || true
   if ssh-keyscan -T 5 -p "$port" "$host" >"$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
-    ssh_forget_known_host_for "$host" "$port" "$kh"
     cat "$tmp" >>"$kh" 2>/dev/null || true
     chmod 600 "$kh" >/dev/null 2>&1 || true
   fi
@@ -126,8 +145,53 @@ ssh_refresh_remote_known_hosts_best_effort(){
     fi
   " >/dev/null 2>&1 || true
 }
+ssh_clean_captured_line(){
+  # prompt_* diagnostics used to be printed to stdout in older builds; when a
+  # user first typed an invalid value, command substitution could save the
+  # warning text together with the real host. Keep only the last non-empty line
+  # and strip ANSI color sequences.
+  local raw="$1" line last=""
+  raw="${raw//$'\r'/}"
+  raw="$(printf '%s
+' "$raw" | sed -E $'s/\x1B\[[0-9;]*[A-Za-z]//g' 2>/dev/null || printf '%s
+' "$raw")"
+  while IFS= read -r line; do
+    line="${line#${line%%[![:space:]]*}}"
+    line="${line%${line##*[![:space:]]}}"
+    [[ -n "$line" ]] && last="$line"
+  done <<<"$raw"
+  printf '%s' "$last"
+}
+
+ssh_normalize_endpoint_vars(){
+  # Normalize OUT_SSH_HOST and optionally extract user/port from pasted values:
+  # root@1.2.3.4:22, 1.2.3.4:22, [2001:db8::1]:22.
+  local raw="${OUT_SSH_HOST:-}" user="" port="" host=""
+  raw="$(ssh_clean_captured_line "$raw")"
+  raw="${raw//[[:space:]]/}"
+  if [[ "$raw" == *@* ]]; then
+    user="${raw%@*}"
+    raw="${raw##*@}"
+    [[ -n "$user" && "$user" != *:* ]] && OUT_SSH_USER="$user"
+  fi
+  if [[ "$raw" =~ ^\[([^]]+)\]:([0-9]+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+  elif [[ "$raw" =~ ^([A-Za-z0-9.-]+):([0-9]+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+  else
+    host="$raw"
+  fi
+  OUT_SSH_HOST="$host"
+  if is_port "${port:-}"; then
+    OUT_SSH_PORT="$port"
+  fi
+}
+
 ssh_normalize_vars(){
   OUT_SSH_USER="${OUT_SSH_USER:-root}"
+  ssh_normalize_endpoint_vars
   if ! is_port "${OUT_SSH_PORT:-}"; then
     OUT_SSH_PORT="22"
   fi
@@ -164,7 +228,11 @@ ssh_profile_set_var_silent(){
 ssh_require_vars(){
   # Normalize and validate SSH connection variables before any ssh(1) call.
   # This prevents cryptic errors like: Bad port ''
+  local _orig_host="${OUT_SSH_HOST:-}" _orig_port="${OUT_SSH_PORT:-}" _orig_user="${OUT_SSH_USER:-}"
   ssh_normalize_vars
+  if [[ -n "${PROFILE:-}" ]] && { [[ "${_orig_host}" != "${OUT_SSH_HOST:-}" ]] || [[ "${_orig_port}" != "${OUT_SSH_PORT:-}" ]] || [[ "${_orig_user}" != "${OUT_SSH_USER:-}" ]]; }; then
+    profile_save >/dev/null 2>&1 || true
+  fi
 
   if [[ -z "${OUT_SSH_HOST:-}" ]]; then
     if ssh_interactive && [[ -n "${PROFILE:-}" ]]; then
@@ -176,6 +244,18 @@ ssh_require_vars(){
       profile_save >/dev/null 2>&1 || true
     else
       err "OUT SSH host is empty. Select/create a profile and set OUT server SSH settings first."
+      return 2
+    fi
+  fi
+
+  if [[ -n "${OUT_SSH_HOST:-}" ]] && ! is_ipv4 "${OUT_SSH_HOST}" && ! is_ipv6 "${OUT_SSH_HOST}" && ! is_host_like "${OUT_SSH_HOST}"; then
+    if ssh_interactive && [[ -n "${PROFILE:-}" ]]; then
+      warn "OUT SSH host in profile '${PROFILE}' looked invalid/corrupted; please re-enter it."
+      OUT_SSH_HOST="$(prompt_host "OUT server host (SSH)" "${OUT_PUBLIC_IP:-}")"
+      OUT_PUBLIC_IP="${OUT_PUBLIC_IP:-$OUT_SSH_HOST}"
+      profile_save >/dev/null 2>&1 || true
+    else
+      err "OUT SSH host is invalid: ${OUT_SSH_HOST}"
       return 2
     fi
   fi
@@ -520,6 +600,21 @@ ssh_exec_stdin_on(){
   else
     ssh -p "$port" "${flags[@]}" "${opts[@]}" "${OUT_SSH_USER}@${host}" "$@"
     rc=$?
+  fi
+
+  # Same host-key rotation/rebuild handling as ssh_exec_cmd_on().  This path is
+  # used by installer steps that pipe scripts over SSH, so it must not be the
+  # one place where a stale OUT signature can still break the install.
+  if (( rc == 255 )); then
+    ssh_forget_known_host_for "$host" "$port" "$kh" >/dev/null 2>&1 || true
+    ssh_prepare_known_hosts_for "$host" "$port" "$kh" >/dev/null 2>&1 || true
+    if (( have_pw == 1 )); then
+      SSHPASS="${OUT_SSH_PASS}" sshpass -e ssh -p "$port" "${flags[@]}" "${opts[@]}" "${OUT_SSH_USER}@${host}" "$@"
+      rc=$?
+    else
+      ssh -p "$port" "${flags[@]}" "${opts[@]}" "${OUT_SSH_USER}@${host}" "$@"
+      rc=$?
+    fi
   fi
   return "$rc"
 }
