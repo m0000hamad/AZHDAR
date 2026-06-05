@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.2.8"
+SCRIPT_VERSION="3.2.9"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -32,7 +32,7 @@ azhdar_normalize_update_base_url(){
   local u="${UPDATE_BASE_URL:-}"
   u="${u%/}"
   case "$u" in
-    ""|*Wf-XKNL9*|*62.60.184.163*)
+    ""|*Wf-XKNL9*|*62.60.184.163*|*37.32.26.129*)
       UPDATE_BASE_URL="$UPDATE_BASE_URL_DEFAULT"
       ;;
     */api/public/dl/gZ1XGygF)
