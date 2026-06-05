@@ -3,8 +3,133 @@
 
 # -------------------- Mimic configs (local/remote) --------------------
 
+# ---- Robust Mimic interface/service helpers ----
+# Mimic is a per-interface systemd unit: mimic@<interface>.service.
+# On VPS/virtual NICs, native XDP can fail; SKB mode is the safe default.
+
+mimic_conf_force_skb(){
+  local cfg="${1:-}"
+  [[ -n "$cfg" && -f "$cfg" ]] || return 0
+  if grep -Eq '^[[:space:]]*xdp_mode[[:space:]]*=' "$cfg" 2>/dev/null; then
+    sed -i -E 's/^[[:space:]]*xdp_mode[[:space:]]*=.*/xdp_mode = skb/' "$cfg" 2>/dev/null || true
+  else
+    # Put it near the top so it is obvious in diagnostics.
+    awk 'BEGIN{done=0} {print; if(!done && $0 ~ /^log\.verbosity[[:space:]]*=/){print "xdp_mode = skb"; done=1}} END{if(!done) print "xdp_mode = skb"}' "$cfg" >"${cfg}.tmp.$$" 2>/dev/null && mv -f "${cfg}.tmp.$$" "$cfg" || true
+  fi
+  chmod 644 "$cfg" 2>/dev/null || true
+}
+
+mimic_detect_local_if(){
+  # Prefer the current WAN route, then an existing Mimic config/unit.
+  local ifc=""
+  ifc="$(detect_wan_if 2>/dev/null || true)"
+  if [[ -n "$ifc" && "$ifc" != "lo" ]]; then
+    echo "$ifc"
+    return 0
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    ifc="$(systemctl list-units --all 'mimic@*.service' --no-legend --plain 2>/dev/null | awk '{print $1}' | sed -n 's/^mimic@\(.*\)\.service$/\1/p' | head -n1 || true)"
+    if [[ -n "$ifc" && "$ifc" != "lo" ]]; then
+      echo "$ifc"
+      return 0
+    fi
+  fi
+  local f
+  for f in /etc/mimic/*.conf; do
+    [[ -f "$f" ]] || continue
+    ifc="$(basename "$f" .conf)"
+    [[ -n "$ifc" && "$ifc" != "lo" ]] || continue
+    echo "$ifc"
+    return 0
+  done
+  return 1
+}
+
+mimic_local_active_quiet(){
+  local wan="${1:-}"
+  if command -v systemctl >/dev/null 2>&1; then
+    if [[ -n "$wan" ]] && systemctl is-active --quiet "mimic@${wan}" 2>/dev/null; then
+      return 0
+    fi
+    local svc
+    while read -r svc; do
+      [[ -n "$svc" ]] || continue
+      systemctl is-active --quiet "$svc" 2>/dev/null && return 0
+    done < <(systemctl list-units --all 'mimic@*.service' --no-legend --plain 2>/dev/null | awk '{print $1}')
+  fi
+  return 1
+}
+
+mimic_restart_local_checked(){
+  local wan="${1:-}"
+  [[ -n "$wan" ]] || wan="$(mimic_detect_local_if 2>/dev/null || true)"
+  [[ -n "$wan" ]] || { err "Cannot detect local interface for Mimic."; return 1; }
+  local cfg="/etc/mimic/${wan}.conf"
+  [[ -f "$cfg" ]] || { err "Mimic config not found: ${cfg}"; return 1; }
+
+  mimic_conf_force_skb "$cfg"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  modprobe mimic >/dev/null 2>&1 || true
+  systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
+  systemctl enable "mimic@${wan}" >/dev/null 2>&1 || true
+
+  if systemctl restart "mimic@${wan}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  warn "Local Mimic failed on ${wan}; retrying with forced xdp_mode=skb."
+  mimic_conf_force_skb "$cfg"
+  systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
+  if systemctl restart "mimic@${wan}" >/dev/null 2>&1; then
+    ok "Local Mimic recovered on ${wan} with xdp_mode=skb."
+    return 0
+  fi
+
+  err "Local Mimic service failed: mimic@${wan}"
+  systemctl status "mimic@${wan}" --no-pager -l 2>/dev/null | sed -n '1,80p' || true
+  journalctl -u "mimic@${wan}" -n 80 --no-pager -l 2>/dev/null || true
+  warn "If the error mentions native XDP/driver support, xdp_mode=skb is already forced. If it mentions the kernel module, check: dkms status; modinfo mimic."
+  return 1
+}
+
+mimic_remote_restart_checked(){
+  local rif="${1:-}"
+  [[ -n "$rif" ]] || rif="${REMOTE_WAN_IF:-}"
+  [[ -n "$rif" ]] || rif="$(remote_detect_wan_if_quiet 2>/dev/null || true)"
+  [[ -n "$rif" ]] || { warn "Remote interface not detected for Mimic restart."; return 1; }
+  REMOTE_WAN_IF="$rif"
+  local qrif
+  qrif="$(printf '%q' "$rif")"
+  ssh_run_stdin_env_root_best_effort "REMOTE_WAN_IF=${rif}" <<'REMOTE'
+set -u
+WAN_IF="${REMOTE_WAN_IF:-}"
+[ -n "$WAN_IF" ] || { echo "ERR:NO_REMOTE_IF"; exit 1; }
+CFG="/etc/mimic/${WAN_IF}.conf"
+[ -f "$CFG" ] || { echo "ERR:NO_REMOTE_MIMIC_CONF:$CFG"; exit 1; }
+if grep -Eq '^[[:space:]]*xdp_mode[[:space:]]*=' "$CFG" 2>/dev/null; then
+  sed -i -E 's/^[[:space:]]*xdp_mode[[:space:]]*=.*/xdp_mode = skb/' "$CFG" 2>/dev/null || true
+else
+  awk 'BEGIN{done=0} {print; if(!done && $0 ~ /^log\.verbosity[[:space:]]*=/){print "xdp_mode = skb"; done=1}} END{if(!done) print "xdp_mode = skb"}' "$CFG" >"${CFG}.tmp.$$" 2>/dev/null && mv -f "${CFG}.tmp.$$" "$CFG" || true
+fi
+chmod 644 "$CFG" 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+modprobe mimic >/dev/null 2>&1 || true
+systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
+systemctl enable "mimic@${WAN_IF}" >/dev/null 2>&1 || true
+if systemctl restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
+  echo "OK:REMOTE_MIMIC:${WAN_IF}"
+  exit 0
+fi
+echo "ERR:REMOTE_MIMIC_FAILED:${WAN_IF}"
+systemctl status "mimic@${WAN_IF}" --no-pager -l 2>/dev/null | sed -n '1,80p' || true
+journalctl -u "mimic@${WAN_IF}" -n 80 --no-pager -l 2>/dev/null || true
+exit 1
+REMOTE
+}
+
+
 mimic_local_conf_path(){
-  local wan; wan="$(detect_wan_if)"
+  local wan; wan="$(mimic_detect_local_if 2>/dev/null || true)"
   [[ -n "$wan" ]] || return 1
   echo "/etc/mimic/${wan}.conf"
 }
@@ -63,7 +188,7 @@ mimic_should_include_profile_for_remote(){
 mimic_rebuild_local_excluding(){
   # Rebuild local Mimic config for all enabled profiles, excluding the given name.
   local exclude="${1:-}"
-  local wan; wan="$(detect_wan_if)"
+  local wan; wan="$(mimic_detect_local_if 2>/dev/null || true)"
   [[ -n "$wan" ]] || return 0
   mkdir -p /etc/mimic
 
@@ -73,6 +198,7 @@ mimic_rebuild_local_excluding(){
   cat >"$tmp" <<EOF
 # Generated by AZHDAR v${SCRIPT_VERSION} - Mimic config (IR)
 log.verbosity = info
+xdp_mode = skb
 handshake = 2:3
 keepalive = 180:10:3:600
 EOF
@@ -99,7 +225,7 @@ EOF
 
   mv -f "$tmp" "$cfg"
   chmod 644 "$cfg" 2>/dev/null || true
-  command -v systemctl >/dev/null 2>&1 && systemctl restart "mimic@${wan}" >/dev/null 2>&1 || true
+  command -v systemctl >/dev/null 2>&1 && mimic_restart_local_checked "$wan" >/dev/null 2>&1 || true
   return 0
 }
 
@@ -141,6 +267,7 @@ MIMIC_BLOCKS="$(printf '%s' "${MIMIC_BLOCKS_B64:-}" | base64 -d 2>/dev/null || t
 cat >"/etc/mimic/${WAN_IF}.conf" <<EOF
 # Generated by AZHDAR v${SCRIPT_VERSION} - Mimic config (OUT)
 log.verbosity = info
+xdp_mode = skb
 handshake = 0:0
 ${MIMIC_BLOCKS}
 EOF
@@ -153,7 +280,7 @@ REMOTE
 
 mimic_profile_present_local(){
   local name="$1"
-  local wan; wan="$(detect_wan_if)"
+  local wan; wan="$(mimic_detect_local_if 2>/dev/null || true)"
   [[ -n "$wan" ]] || return 1
   local cfg="/etc/mimic/${wan}.conf"
   [[ -f "$cfg" ]] || return 1
@@ -169,7 +296,7 @@ mimic_profile_present_remote(){
 
 write_mimic_conf_local(){
   step "Write Mimic config (local)"
-  local wan; wan="$(detect_wan_if)"
+  local wan; wan="$(mimic_detect_local_if 2>/dev/null || true)"
   [[ -n "$wan" ]] || die "Cannot detect WAN interface."
   mkdir -p /etc/mimic
 
@@ -179,6 +306,7 @@ write_mimic_conf_local(){
   cat >"$tmp" <<EOF
 # Generated by AZHDAR v${SCRIPT_VERSION} - Mimic config (IR)
 log.verbosity = info
+xdp_mode = skb
 handshake = 2:3
 keepalive = 180:10:3:600
 EOF
@@ -247,6 +375,7 @@ fi
 cat >"/etc/mimic/${WAN_IF}.conf" <<EOF
 # Generated by AZHDAR v${SCRIPT_VERSION} - Mimic config (OUT)
 log.verbosity = info
+xdp_mode = skb
 handshake = 0:0
 ${MIMIC_BLOCKS}
 EOF
@@ -265,10 +394,9 @@ REMOTE
 }
 
 enable_mimic_local(){
-  local wan; wan="$(detect_wan_if)"
-  [[ -n "$wan" ]] || return 0
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable --now "mimic@${wan}" >/dev/null 2>&1 || true
+  local wan; wan="$(mimic_detect_local_if 2>/dev/null || true)"
+  [[ -n "$wan" ]] || return 1
+  mimic_restart_local_checked "$wan"
 }
 
 enable_mimic_remote(){
@@ -280,7 +408,7 @@ enable_mimic_remote(){
       profile_save >/dev/null 2>&1 || true
     fi
   fi
-  [[ -n "$rif" ]] || return 0
-  ssh_run_root_best_effort "systemctl daemon-reload >/dev/null 2>&1 || true; systemctl enable --now mimic@${rif} >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+  [[ -n "$rif" ]] || return 1
+  mimic_remote_restart_checked "$rif"
 }
 

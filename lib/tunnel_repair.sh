@@ -106,9 +106,13 @@ _tunnel_repair_snapshot(){
 
 _tunnel_repair_stop_local_runtime(){
   local wan wgsvc
-  wan="$(detect_wan_if 2>/dev/null || true)"
+  wan="$(mimic_detect_local_if 2>/dev/null || detect_wan_if 2>/dev/null || true)"
   wgsvc="$(svc_wg)"
   if command -v systemctl >/dev/null 2>&1; then
+    local svc
+    while read -r svc; do
+      [[ -n "$svc" ]] && systemctl stop "$svc" >/dev/null 2>&1 || true
+    done < <(systemctl list-units --all 'mimic@*.service' --no-legend --plain 2>/dev/null | awk '{print $1}')
     [[ -n "$wan" ]] && systemctl stop "mimic@${wan}" >/dev/null 2>&1 || true
     systemctl stop "$wgsvc" >/dev/null 2>&1 || true
     systemctl reset-failed "$wgsvc" "mimic@${wan}" >/dev/null 2>&1 || true
@@ -199,6 +203,36 @@ _tunnel_repair_wait_connected(){
     _tunnel_repair_log_msg "health-check failed attempt ${i}/${max}"
   done
   return 1
+}
+
+
+azhdar_repair_tunnel_limited(){
+  # Run one automatic repair pass with a hard wall-clock cap so UI never looks stuck.
+  local limit="${1:-90}" log pid i rc=1
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=90
+  (( limit < 20 )) && limit=20
+  log="/tmp/azhdar-repair-pass-${PROFILE:-default}-$$.log"
+  ( azhdar_repair_tunnel --auto --yes >"$log" 2>&1 ) &
+  pid=$!
+  for ((i=0;i<limit;i++)); do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      wait "$pid" 2>/dev/null; rc=$?
+      break
+    fi
+    sleep 1
+  done
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    warn "Safe repair pass timed out after ${limit}s; stopping it. Run menu 13 for full repair/diagnostics."
+    kill "$pid" >/dev/null 2>&1 || true
+    sleep 1
+    kill -9 "$pid" >/dev/null 2>&1 || true
+    rc=124
+  fi
+  if [[ -s "$log" ]]; then
+    tail -n 60 "$log" 2>/dev/null || true
+  fi
+  rm -f "$log" 2>/dev/null || true
+  return "$rc"
 }
 
 azhdar_repair_tunnel(){

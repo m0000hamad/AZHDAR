@@ -83,11 +83,16 @@ start_services_local(){
     return 0
   fi
   step "Start services (local)"
-  enable_mimic_local
+  local mimic_ok=0 wg_ok=0
+  enable_mimic_local && mimic_ok=1 || warn "Local Mimic service did not start cleanly."
   systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable --now "$(svc_wg)" >/dev/null 2>&1 || true
-  ok "Local services started."
+  systemctl enable --now "$(svc_wg)" >/dev/null 2>&1 && wg_ok=1 || warn "Local WireGuard service did not start cleanly."
   status_cache_invalidate || true
+  if (( mimic_ok == 1 && wg_ok == 1 )); then
+    ok "Local services started."
+    return 0
+  fi
+  return 1
 }
 
 start_services_remote(){
@@ -97,10 +102,15 @@ start_services_remote(){
     return 0
   fi
   step "Start services (remote)"
-  enable_mimic_remote
-  ssh_run_root_best_effort "systemctl enable --now wg-quick@${WG_IF} >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
-  ok "Remote services started (best-effort)."
+  local mimic_ok=0 wg_ok=0
+  enable_mimic_remote && mimic_ok=1 || warn "Remote Mimic service did not start cleanly."
+  ssh_run_root_best_effort "systemctl enable --now wg-quick@${WG_IF} >/dev/null 2>&1" >/dev/null 2>&1 && wg_ok=1 || warn "Remote WireGuard service did not start cleanly."
   status_cache_invalidate || true
+  if (( mimic_ok == 1 && wg_ok == 1 )); then
+    ok "Remote services started (best-effort)."
+    return 0
+  fi
+  return 1
 }
 
 restart_services_local(){
@@ -114,11 +124,16 @@ restart_services_local(){
     return 0
   fi
   step "Restart services (local)"
-  local wan; wan="$(detect_wan_if)"
-  [[ -n "$wan" ]] && systemctl restart "mimic@${wan}" >/dev/null 2>&1 || true
-  systemctl restart "$(svc_wg)" >/dev/null 2>&1 || true
-  ok "Local services restarted."
+  local wan mimic_ok=0 wg_ok=0
+  wan="$(mimic_detect_local_if 2>/dev/null || true)"
+  [[ -n "$wan" ]] && mimic_restart_local_checked "$wan" && mimic_ok=1 || warn "Local Mimic restart was not confirmed."
+  systemctl restart "$(svc_wg)" >/dev/null 2>&1 && wg_ok=1 || warn "Local WireGuard restart was not confirmed."
   status_cache_invalidate || true
+  if (( mimic_ok == 1 && wg_ok == 1 )); then
+    ok "Local services restarted."
+    return 0
+  fi
+  return 1
 }
 
 restart_services_remote(){
@@ -128,14 +143,18 @@ restart_services_remote(){
     return 0
   fi
   step "Restart services (remote)"
-  local wan="${REMOTE_WAN_IF:-}"
+  local wan="${REMOTE_WAN_IF:-}" mimic_ok=0 wg_ok=0
   if [[ -z "$wan" ]]; then
     wan="$(remote_detect_wan_if_quiet || true)"
   fi
-  [[ -n "$wan" ]] && ssh_run_root_best_effort "systemctl restart mimic@${wan} >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
-  ssh_run_root_best_effort "systemctl restart wg-quick@${WG_IF} >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
-  ok "Remote services restarted (best-effort)."
+  [[ -n "$wan" ]] && mimic_remote_restart_checked "$wan" && mimic_ok=1 || warn "Remote Mimic restart was not confirmed."
+  ssh_run_root_best_effort "systemctl restart wg-quick@${WG_IF} >/dev/null 2>&1" >/dev/null 2>&1 && wg_ok=1 || warn "Remote WireGuard restart was not confirmed."
   status_cache_invalidate || true
+  if (( mimic_ok == 1 && wg_ok == 1 )); then
+    ok "Remote services restarted (best-effort)."
+    return 0
+  fi
+  return 1
 }
 
 stop_services_local(){
@@ -148,7 +167,13 @@ stop_services_local(){
     return 0
   fi
   step "Stop services (local)"
-  local wan; wan="$(detect_wan_if)"
+  local wan svc
+  wan="$(mimic_detect_local_if 2>/dev/null || true)"
+  if command -v systemctl >/dev/null 2>&1; then
+    while read -r svc; do
+      [[ -n "$svc" ]] && systemctl stop "$svc" >/dev/null 2>&1 || true
+    done < <(systemctl list-units --all 'mimic@*.service' --no-legend --plain 2>/dev/null | awk '{print $1}')
+  fi
   [[ -n "$wan" ]] && systemctl stop "mimic@${wan}" >/dev/null 2>&1 || true
   systemctl stop "$(svc_wg)" >/dev/null 2>&1 || true
   ok "Local services stopped."

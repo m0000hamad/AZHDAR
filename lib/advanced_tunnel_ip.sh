@@ -216,7 +216,7 @@ apply_wg_configs_best_effort(){
     ok "WireGuard configs applied and tunnel is reachable."
   else
     warn "WireGuard configs applied, but tunnel health is not confirmed yet. Running one safe repair pass."
-    azhdar_repair_tunnel --yes >/dev/null 2>&1 || true
+    azhdar_repair_tunnel_limited 90 || true
     if azhdar_ping_ok_quiet; then
       ok "Tunnel became reachable after repair pass."
     else

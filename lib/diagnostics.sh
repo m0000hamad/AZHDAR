@@ -101,12 +101,18 @@ connection_indicator(){
   step "AZHDAR indicator"
 
   local wgsvc; wgsvc="$(svc_wg)"
-  local wan; wan="$(detect_wan_if)"
+  local wan; wan="$(mimic_detect_local_if 2>/dev/null || detect_wan_if 2>/dev/null || true)"
   local mimicsvc="mimic@${wan}"
 
   local wg_svc_active=0 wg_active=0 mimic_active=0
   systemctl is-active --quiet "$wgsvc" 2>/dev/null && wg_svc_active=1 || true
-  systemctl is-active --quiet "$mimicsvc" 2>/dev/null && mimic_active=1 || true
+  if [[ "${WG_MODE:-classic}" == "account" ]]; then
+    mimic_active=1
+  elif declare -F mimic_local_active_quiet >/dev/null 2>&1; then
+    mimic_local_active_quiet "$wan" && mimic_active=1 || true
+  elif [[ -n "$wan" ]]; then
+    systemctl is-active --quiet "$mimicsvc" 2>/dev/null && mimic_active=1 || true
+  fi
 
   # Local SSH fallback state (if enabled)
   local sshfb_active=0

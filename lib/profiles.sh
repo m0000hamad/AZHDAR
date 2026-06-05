@@ -531,7 +531,7 @@ apply_wg_configs_mtu_safe(){
     ok "Tunnel health confirmed after MTU/Keepalive apply."
   else
     warn "Tunnel health is not confirmed after MTU/Keepalive apply. Starting one safe repair pass."
-    azhdar_repair_tunnel --yes >/dev/null 2>&1 || true
+    azhdar_repair_tunnel_limited 90 || true
     if azhdar_ping_ok_quiet; then
       ok "Tunnel became reachable after repair pass."
     else

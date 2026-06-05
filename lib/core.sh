@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.2.2"
+SCRIPT_VERSION="3.2.3"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -145,6 +145,18 @@ ${RED}${BOLD}Fatal:${RST} step failed: ${BOLD}${LAST_STEP:-unknown}${RST} (exit=
   exit "$ec"
 }
 trap on_err ERR
+
+# Run a step/function in a subshell without the global ERR trap.
+# This is used for controlled checks where the caller handles success/failure
+# itself (for example: if azhdar_try install_mimic_remote; then ...).
+# Without this, recoverable probe failures inside the function can print a fake
+# "Fatal: step failed" even though the step later recovers and returns OK.
+azhdar_try(){
+  (
+    trap - ERR
+    "$@"
+  )
+}
 
 
 # In interactive menus we must not let a recoverable command failure (for example

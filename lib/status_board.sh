@@ -836,10 +836,12 @@ profile_quick_info_panel(){
     ssh_local_ok=1
   fi
 
-  if [[ -n "$wan" ]] && command -v systemctl >/dev/null 2>&1; then
-    systemctl is-active --quiet "mimic@${wan}" 2>/dev/null && mimic_local_ok=1 || true
-  elif [[ "${WG_MODE:-classic}" == "account" ]]; then
+  if [[ "${WG_MODE:-classic}" == "account" ]]; then
     mimic_local_ok=1
+  elif declare -F mimic_local_active_quiet >/dev/null 2>&1; then
+    mimic_local_active_quiet "$wan" && mimic_local_ok=1 || true
+  elif [[ -n "$wan" ]] && command -v systemctl >/dev/null 2>&1; then
+    systemctl is-active --quiet "mimic@${wan}" 2>/dev/null && mimic_local_ok=1 || true
   fi
   hs_epoch="$(wg_handshake_epoch 2>/dev/null || echo 0)"
   local hs_state="no-handshake" az_connected=0 connect_line=""

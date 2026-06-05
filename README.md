@@ -1,4 +1,4 @@
-# AZHDAR (modular) v3.2.2
+# AZHDAR (modular) v3.2.3
 
 AZHDAR is a modular manager for WireGuard over Mimic (eBPF) with isolated profiles.
 
@@ -27,7 +27,7 @@ Updates are auto-discovered from a directory listing (`UPDATE_BASE_URL`, default
 
 > The update package must include `scripts/install.sh` (like this ZIP).
 
-## AZHDAR v3.2.2 tunnel repair
+## AZHDAR v3.2.3 tunnel repair
 
 This build adds a conservative tunnel repair path for operational servers:
 
@@ -39,3 +39,19 @@ This build adds a conservative tunnel repair path for operational servers:
 
 
 Mimic fallback mirror name: m0000hamad (`https://dl.digitsell.shop/share/Wf-XKNL9`).
+
+## AZHDAR v3.2.3 service detection fixes
+
+- Forces Mimic `xdp_mode = skb` in generated configs for better VPS/virtual NIC compatibility.
+- Starts and restarts the correct per-interface service `mimic@<wan>` automatically.
+- Detects local Mimic interface from route, existing `mimic@*.service`, or `/etc/mimic/*.conf`.
+- Shows the real `mimic@<wan>` systemd status/journal when Mimic fails.
+- Caps automatic safe repair passes so the UI does not appear stuck.
+
+## AZHDAR v3.2.3 install/service fixes
+
+- Controlled install probes no longer print a false `Fatal: step failed` when the same step later succeeds.
+- Mimic install check now validates both the CLI and the kernel module (`modprobe mimic`) on IR and OUT.
+- If Mimic CLI is present but DKMS/module is broken, AZHDAR attempts a DKMS/package repair instead of reporting success too early.
+- Mimic service detection uses `mimic@<detected-interface>` and accepts any active `mimic@*.service`.
+- Automatic safe repair is time-limited so the UI does not stay stuck indefinitely.
