@@ -45,6 +45,78 @@ fetch_with_fallback(){
   curl_fetch_fast "$fallback" "$out"
 }
 
+asset_mirror_share_api_url(){
+  # Convert ASSET_MIRROR_BASE to the File Browser public-share API URL.
+  # Accepted inputs:
+  #   https://host/share/HASH
+  #   https://host/api/public/share/HASH
+  #   https://host/api/public/dl/HASH
+  local base="${ASSET_MIRROR_BASE%/}" root share
+  case "$base" in
+    */api/public/dl/*)
+      share="${base##*/api/public/dl/}"
+      root="${base%%/api/public/dl/*}"
+      printf '%s\n' "${root}/api/public/share/${share}"
+      ;;
+    */api/public/share/*)
+      printf '%s\n' "$base"
+      ;;
+    */share/*)
+      share="${base##*/share/}"
+      root="${base%%/share/*}"
+      printf '%s\n' "${root}/api/public/share/${share}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+asset_mirror_names(){
+  local api json
+  api="$(asset_mirror_share_api_url 2>/dev/null || true)"
+  [[ -n "$api" ]] || return 1
+  json="$(curl -fsSL --max-time 8 "$api" 2>/dev/null || true)"
+  [[ -n "$json" ]] || return 1
+  # Do not require jq here; installer must work on minimal systems.
+  printf '%s' "$json" | grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+}
+
+mimic_mirror_asset_url(){
+  # usage: mimic_mirror_asset_url <codename> <mimic|mimic-dkms>
+  # Picks the newest matching .deb from the mirror share. It intentionally accepts
+  # both codename-prefixed assets (bookworm_mimic_...) and official Debian-style
+  # assets (mimic_0.7.0+ds-2_amd64.deb), so filenames are version-flexible.
+  local codename="$1" kind="$2" names name pat
+  codename="${codename,,}"
+  names="$(asset_mirror_names 2>/dev/null || true)"
+  [[ -n "$names" ]] || return 1
+
+  local -a patterns
+  if [[ "$kind" == "mimic-dkms" ]]; then
+    patterns=(
+      "^${codename}_mimic-dkms_[^/]+_amd64\.deb$"
+      "^mimic-dkms_[^/]+_amd64\.deb$"
+      "^[a-z0-9._-]+_mimic-dkms_[^/]+_amd64\.deb$"
+    )
+  else
+    patterns=(
+      "^${codename}_mimic_[^/]+_amd64\.deb$"
+      "^mimic_[^/]+_amd64\.deb$"
+      "^[a-z0-9._-]+_mimic_[^/]+_amd64\.deb$"
+    )
+  fi
+
+  for pat in "${patterns[@]}"; do
+    name="$(printf '%s\n' "$names" | grep -E "$pat" | sort -V | tail -n1 || true)"
+    if [[ -n "$name" ]]; then
+      printf '%s/%s\n' "${ASSET_MIRROR_BASE%/}" "$name"
+      return 0
+    fi
+  done
+  return 1
+}
+
 azhdar_apt_get(){
   # Keep apt/needrestart non-interactive and avoid scary raw apt notices in the UI.
   DEBIAN_FRONTEND=noninteractive \
@@ -121,23 +193,11 @@ install_mimic_local(){
   codename="${codename,,}"
   [[ -n "$codename" ]] || die "Cannot detect OS codename."
 
-  # Asset mirror fallbacks (used when GitHub is blocked)
-local fb1="" fb2=""
-case "$codename" in
-  noble)
-    fb1="$IR_MIRROR_MIMIC_NOBLE_DEB"
-    fb2="$IR_MIRROR_MIMIC_NOBLE_DKMS_DEB"
-    ;;
-  bookworm)
-    fb1="$IR_MIRROR_MIMIC_BOOKWORM_DEB"
-    fb2="$IR_MIRROR_MIMIC_BOOKWORM_DKMS_DEB"
-    ;;
-  *)
-    # If you mirrored the GitHub release assets under the same naming convention, this will work too.
-    fb1="${ASSET_MIRROR_BASE}/${codename}_mimic_0.7.0-1_amd64.deb"
-    fb2="${ASSET_MIRROR_BASE}/${codename}_mimic-dkms_0.7.0-1_amd64.deb"
-    ;;
-esac
+  # Asset mirror fallbacks (used when GitHub is blocked).
+  # Resolve dynamically from the File Browser share, so exact version filenames do not matter.
+  local fb1="" fb2=""
+  fb1="$(mimic_mirror_asset_url "$codename" mimic 2>/dev/null || true)"
+  fb2="$(mimic_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || true)"
 
 local okcod
 okcod="$(mimic_supported_codename "$codename" || true)"
@@ -175,7 +235,7 @@ u2="$(github_latest_asset_url "hack3ric/mimic" ".*/${codename}_mimic-dkms_[^/]*_
 
 if [[ -z "$u1" || -z "$u2" ]]; then
   if [[ -n "$fb1" && -n "$fb2" ]]; then
-    warn "GitHub assets lookup failed (or blocked). Using atil.ir mirror for Mimic (${codename})."
+    warn "GitHub assets lookup failed (or blocked). Using configured mirror for Mimic (${codename})."
   else
     die "Failed to locate Mimic .deb assets for codename=${codename}."
   fi
@@ -256,21 +316,20 @@ install_mimic_remote(){
   [[ "$arch" == "x86_64" ]] || die "Remote architecture '${arch}' is not amd64/x86_64; Mimic packages are amd64-only."
   [[ -n "${codename:-}" ]] || die "Cannot detect remote OS codename."
 
+  # Mirror fallbacks for remote install (used when GitHub is blocked).
+  # Resolve dynamically from the File Browser share, so exact version filenames do not matter.
+  local fb1="" fb2=""
+  fb1="$(mimic_mirror_asset_url "$codename" mimic 2>/dev/null || true)"
+  fb2="$(mimic_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || true)"
+
 local okcod
 okcod="$(mimic_supported_codename "$codename" || true)"
 if [[ "$okcod" == "no" ]]; then
-  if [[ "$codename" == "noble" && -n "${IR_MIRROR_MIMIC_NOBLE_DEB:-}" && -n "${IR_MIRROR_MIMIC_NOBLE_DKMS_DEB:-}" ]]; then
-    warn "Mimic GitHub assets not found for remote codename='${codename}', but an IR mirror is configured; continuing with mirror (best-effort)."
+  if [[ -n "$fb1" && -n "$fb2" ]]; then
+    warn "Mimic GitHub assets not found for remote codename='${codename}', but a mirror is configured; continuing with mirror (best-effort)."
   else
     die "Mimic release assets not found for remote codename='${codename}'. Use Debian 12 (bookworm) / Ubuntu 24.04 (noble) or newer."
   fi
-fi
-
-# IR mirror fallbacks for remote install (used when GitHub is blocked)
-local fb1="" fb2=""
-if [[ "$codename" == "noble" ]]; then
-  fb1="$IR_MIRROR_MIMIC_NOBLE_DEB"
-  fb2="$IR_MIRROR_MIMIC_NOBLE_DKMS_DEB"
 fi
 
   ssh_run_stdin_env_root "CODENAME=${codename} MIMIC_FB_DEB=${fb1} MIMIC_FB_DKMS=${fb2}" <<'REMOTE'
@@ -342,6 +401,14 @@ fi
 
 curl -fL --connect-timeout 4 --max-time 25 "$deb1" -o "$tmp/mimic.deb" >/dev/null
 curl -fL --connect-timeout 4 --max-time 25 "$deb2" -o "$tmp/mimic-dkms.deb" >/dev/null
+if ! dpkg-deb -I "$tmp/mimic.deb" >/dev/null 2>&1; then
+  echo "INVALID_MIMIC_DEB"
+  exit 8
+fi
+if ! dpkg-deb -I "$tmp/mimic-dkms.deb" >/dev/null 2>&1; then
+  echo "INVALID_MIMIC_DKMS_DEB"
+  exit 8
+fi
 chmod 644 "$tmp"/mimic*.deb 2>/dev/null || true
 aptq install -y "$tmp/mimic.deb" "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || { echo "APT_INSTALL_FAILED"; exit 7; }
 

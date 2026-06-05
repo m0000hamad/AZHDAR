@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.1.16"
+SCRIPT_VERSION="3.2.0"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -22,12 +22,33 @@ GLOBAL_STATE="${BASE_DIR}/global.env"
 LOG_FILE="${BASE_DIR}/manager.log"
 
 # Self-update (auto-discover latest zip from directory listing).
-UPDATE_BASE_URL_DEFAULT="https://62.60.184.163/share/gZ1XGygF"
+UPDATE_BASE_URL_DEFAULT="https://dl.digitsell.shop/share/gZ1XGygF"
 UPDATE_BASE_URL="${UPDATE_BASE_URL:-$UPDATE_BASE_URL_DEFAULT}"
 
 # Asset mirrors (useful when GitHub is filtered).
-ASSET_MIRROR_BASE_DEFAULT="https://dl.digitsell.shop/share/gZ1XGygF"
+ASSET_MIRROR_BASE_DEFAULT="https://dl.digitsell.shop/api/public/dl/Wf-XKNL9"
 ASSET_MIRROR_BASE="${ASSET_MIRROR_BASE:-$ASSET_MIRROR_BASE_DEFAULT}"
+
+# Accept either File Browser share URLs or direct API download bases for mirrors.
+# Examples:
+#   https://dl.digitsell.shop/share/Wf-XKNL9
+#   https://dl.digitsell.shop/api/public/share/Wf-XKNL9
+#   https://dl.digitsell.shop/api/public/dl/Wf-XKNL9
+case "${ASSET_MIRROR_BASE%/}" in
+  */share/*)
+    _az_mirror_tmp="${ASSET_MIRROR_BASE%/}"
+    _az_mirror_share="${_az_mirror_tmp##*/share/}"
+    _az_mirror_root="${_az_mirror_tmp%%/share/*}"
+    ASSET_MIRROR_BASE="${_az_mirror_root}/api/public/dl/${_az_mirror_share}"
+    ;;
+  */api/public/share/*)
+    _az_mirror_tmp="${ASSET_MIRROR_BASE%/}"
+    _az_mirror_share="${_az_mirror_tmp##*/api/public/share/}"
+    _az_mirror_root="${_az_mirror_tmp%%/api/public/share/*}"
+    ASSET_MIRROR_BASE="${_az_mirror_root}/api/public/dl/${_az_mirror_share}"
+    ;;
+esac
+unset _az_mirror_tmp _az_mirror_share _az_mirror_root 2>/dev/null || true
 
 # Default candidates (ports that typically blend in)
 WG_PORT_CANDIDATES=(443 8443 2053 2083 2087 2096 8080 80 4443 9443)

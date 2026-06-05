@@ -1,4 +1,4 @@
-# AZHDAR (modular) v3.1.15
+# AZHDAR (modular) v3.2.0
 
 AZHDAR is a modular manager for WireGuard over Mimic (eBPF) with isolated profiles.
 
@@ -27,7 +27,7 @@ Updates are auto-discovered from a directory listing (`UPDATE_BASE_URL`, default
 
 > The update package must include `scripts/install.sh` (like this ZIP).
 
-## AZHDAR v3.1.15 tunnel repair
+## AZHDAR v3.2.0 tunnel repair
 
 This build adds a conservative tunnel repair path for operational servers:
 

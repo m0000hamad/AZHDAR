@@ -108,15 +108,38 @@ azhdar_update_check(){
   # Sets: UPDATE_LATEST_VERSION UPDATE_PACKAGE_URL UPDATE_PACKAGE_ZIP
   local base="${UPDATE_BASE_URL:-}"
   if [[ -z "$base" ]]; then
-    base="https://dl.digitsell.shop/share/Wf-XKNL9"
+    base="https://dl.digitsell.shop/share/gZ1XGygF"
   fi
 
+  local list_url download_base fb_root share_id
+  list_url="$base"
+  download_base="${base%/}"
+  fb_root=""
+  share_id=""
 
-  # Ensure trailing slash for directory listing
-  local list_url="$base"
-  [[ "$list_url" == */ ]] || list_url+="/"
+  # File Browser share URL support. The /share/<id> page is HTML/JS; the
+  # reliable file list is /api/public/share/<id>, and downloads are under
+  # /api/public/dl/<id>/<filename>.
+  if [[ "${base%/}" =~ ^(https?://[^/]+)/share/([^/?#]+)$ ]]; then
+    fb_root="${BASH_REMATCH[1]}"
+    share_id="${BASH_REMATCH[2]}"
+    list_url="${fb_root}/api/public/share/${share_id}"
+    download_base="${fb_root}/api/public/dl/${share_id}"
+  elif [[ "${base%/}" =~ ^(https?://[^/]+)/api/public/share/([^/?#]+)$ ]]; then
+    fb_root="${BASH_REMATCH[1]}"
+    share_id="${BASH_REMATCH[2]}"
+    list_url="${fb_root}/api/public/share/${share_id}"
+    download_base="${fb_root}/api/public/dl/${share_id}"
+  elif [[ "${base%/}" =~ ^(https?://[^/]+)/api/public/dl/([^/?#]+)$ ]]; then
+    fb_root="${BASH_REMATCH[1]}"
+    share_id="${BASH_REMATCH[2]}"
+    list_url="${fb_root}/api/public/share/${share_id}"
+    download_base="${fb_root}/api/public/dl/${share_id}"
+  else
+    [[ "$list_url" == */ ]] || list_url+="/"
+  fi
 
-  local tmp; tmp="$(mktemp -t azhdar-listing.XXXXXX.html)"
+  local tmp; tmp="$(mktemp -t azhdar-listing.XXXXXX)"
   if ! _update_fetch "$list_url" "$tmp"; then
     rm -f "$tmp" 2>/dev/null || true
     return 4
@@ -137,7 +160,7 @@ azhdar_update_check(){
 
   UPDATE_LATEST_VERSION="$(semver_normalize "$latest_ver")"
   UPDATE_PACKAGE_ZIP="$latest_zip"
-  UPDATE_PACKAGE_URL="${base%/}/${latest_zip}"
+  UPDATE_PACKAGE_URL="${download_base%/}/${latest_zip}"
 
   semver_cmp "$UPDATE_LATEST_VERSION" "$SCRIPT_VERSION"
   case $? in
@@ -146,7 +169,6 @@ azhdar_update_check(){
     2) return 2 ;; # local newer (dev)
   esac
 }
-
 azhdar_update_apply(){
   need_root
 
@@ -192,7 +214,7 @@ azhdar_update_menu(){
   banner
   echo -e "${BOLD}${WHT}AZHDAR Update${RST}"
   hr
-  echo -e "${DIM}Source:${RST} ${UPDATE_BASE_URL:-https://dl.digitsell.shop/share/Wf-XKNL9}"
+  echo -e "${DIM}Source:${RST} ${UPDATE_BASE_URL:-https://dl.digitsell.shop/share/gZ1XGygF}"
   echo -e "${DIM}Current version:${RST} ${SCRIPT_VERSION}"
   hr
 
