@@ -11,7 +11,7 @@ github_latest_asset_url(){
 }
 
 
-# -------------------- IR mirror (fast fallback) --------------------
+# -------------------- m0000hamad mirror (fast fallback) --------------------
 # If downloads from global sources (GitHub/Ubuntu) are filtered or slow on IR,
 # we can fallback to Iranian mirrors. OUT keeps using original URLs.
 IR_MIRROR_MIMIC_NOBLE_DEB="${ASSET_MIRROR_BASE}/noble_mimic_0.7.0-1_amd64.deb"
@@ -82,6 +82,20 @@ asset_mirror_names(){
   printf '%s' "$json" | grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
 }
 
+azhdar_url_path_escape_name(){
+  # File Browser public-download paths need literal filename components. Encode
+  # characters such as + from Debian versions (0.7.0+ds-2), otherwise some
+  # proxies/servers may resolve the path incorrectly.
+  local s="$1"
+  s="${s//%/%25}"
+  s="${s// /%20}"
+  s="${s//+/%2B}"
+  s="${s//#/%23}"
+  s="${s//\?/%3F}"
+  s="${s//&/%26}"
+  printf '%s' "$s"
+}
+
 mimic_mirror_asset_url(){
   # usage: mimic_mirror_asset_url <codename> <mimic|mimic-dkms>
   # Picks the newest matching .deb from the mirror share. It intentionally accepts
@@ -110,7 +124,7 @@ mimic_mirror_asset_url(){
   for pat in "${patterns[@]}"; do
     name="$(printf '%s\n' "$names" | grep -E "$pat" | sort -V | tail -n1 || true)"
     if [[ -n "$name" ]]; then
-      printf '%s/%s\n' "${ASSET_MIRROR_BASE%/}" "$name"
+      printf '%s/%s\n' "${ASSET_MIRROR_BASE%/}" "$(azhdar_url_path_escape_name "$name")"
       return 0
     fi
   done
@@ -203,7 +217,7 @@ local okcod
 okcod="$(mimic_supported_codename "$codename" || true)"
 if [[ "$okcod" == "no" ]]; then
   if [[ -n "$fb1" && -n "$fb2" ]]; then
-    warn "Mimic GitHub assets not found for codename='${codename}', but an IR mirror is configured; continuing with mirror (best-effort)."
+    warn "Mimic GitHub assets not found for codename='${codename}', but an m0000hamad mirror is configured; continuing with mirror (best-effort)."
   else
     die "Mimic release assets not found for codename='${codename}'. Use Debian 12 (bookworm) / Ubuntu 24.04 (noble) or newer."
   fi
@@ -229,20 +243,28 @@ local tmp="/tmp/mimic-install.$$"
 rm -rf "$tmp"; mkdir -p "$tmp"; chmod 755 "$tmp" 2>/dev/null || true
 
 local u1 u2
-# Try GitHub first (if reachable); otherwise fall back to the IR mirror.
+# Try GitHub first (if reachable); otherwise fall back to the m0000hamad mirror.
 u1="$(github_latest_asset_url "hack3ric/mimic" ".*/${codename}_mimic_[^/]*_amd64\.deb$" 2>/dev/null || true)"
 u2="$(github_latest_asset_url "hack3ric/mimic" ".*/${codename}_mimic-dkms_[^/]*_amd64\.deb$" 2>/dev/null || true)"
 
 if [[ -z "$u1" || -z "$u2" ]]; then
   if [[ -n "$fb1" && -n "$fb2" ]]; then
-    warn "GitHub assets lookup failed (or blocked). Using configured mirror for Mimic (${codename})."
+    warn "GitHub assets lookup failed (or blocked). Using ${ASSET_MIRROR_NAME:-m0000hamad} mirror for Mimic (${codename})."
   else
     die "Failed to locate Mimic .deb assets for codename=${codename}."
   fi
 fi
 
-  fetch_with_fallback "$u1" "$fb1" "$tmp/mimic.deb" || die "Failed to download Mimic package (primary+fallback)."
-  fetch_with_fallback "$u2" "$fb2" "$tmp/mimic-dkms.deb" || die "Failed to download Mimic DKMS package (primary+fallback)."
+  fetch_with_fallback "$u1" "$fb1" "$tmp/mimic.deb" || {
+    err "Failed to download Mimic package (primary+fallback)."
+    [[ -n "$fb1" ]] && echo "Mirror URL tried: $fb1"
+    die "Mimic package download failed."
+  }
+  fetch_with_fallback "$u2" "$fb2" "$tmp/mimic-dkms.deb" || {
+    err "Failed to download Mimic DKMS package (primary+fallback)."
+    [[ -n "$fb2" ]] && echo "Mirror URL tried: $fb2"
+    die "Mimic DKMS package download failed."
+  }
   # Basic sanity check (guard against HTML/blocked pages saved as .deb)
   dpkg-deb -I "$tmp/mimic.deb" >/dev/null 2>&1 || die "Downloaded mimic.deb is not a valid Debian package. Check ASSET_MIRROR_BASE or connectivity."
   dpkg-deb -I "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || die "Downloaded mimic-dkms.deb is not a valid Debian package. Check ASSET_MIRROR_BASE or connectivity."
@@ -326,13 +348,13 @@ local okcod
 okcod="$(mimic_supported_codename "$codename" || true)"
 if [[ "$okcod" == "no" ]]; then
   if [[ -n "$fb1" && -n "$fb2" ]]; then
-    warn "Mimic GitHub assets not found for remote codename='${codename}', but a mirror is configured; continuing with mirror (best-effort)."
+    warn "Mimic GitHub assets not found for remote codename='${codename}', but ${ASSET_MIRROR_NAME:-m0000hamad} mirror is configured; continuing with mirror (best-effort)."
   else
     die "Mimic release assets not found for remote codename='${codename}'. Use Debian 12 (bookworm) / Ubuntu 24.04 (noble) or newer."
   fi
 fi
 
-  ssh_run_stdin_env_root "CODENAME=${codename} MIMIC_FB_DEB=${fb1} MIMIC_FB_DKMS=${fb2}" <<'REMOTE'
+  ssh_run_stdin_env_root "CODENAME=${codename}" "MIMIC_FB_DEB=${fb1}" "MIMIC_FB_DKMS=${fb2}" "ASSET_MIRROR_NAME=${ASSET_MIRROR_NAME:-m0000hamad}" <<'REMOTE'
 set -euo pipefail
 
 if ! command -v apt-get >/dev/null 2>&1; then
@@ -390,7 +412,7 @@ deb2="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic-dkms_[^/]*_amd64\.de
 
 if [ -z "$deb1" ] || [ -z "$deb2" ]; then
   if [ -n "$fb1" ] && [ -n "$fb2" ]; then
-    echo "GITHUB_BLOCKED_OR_NO_ASSETS: using mirror"
+    echo "GITHUB_BLOCKED_OR_NO_ASSETS: using ${ASSET_MIRROR_NAME:-m0000hamad} mirror"
     deb1="$fb1"
     deb2="$fb2"
   else
@@ -399,8 +421,8 @@ if [ -z "$deb1" ] || [ -z "$deb2" ]; then
   fi
 fi
 
-curl -fL --connect-timeout 4 --max-time 25 "$deb1" -o "$tmp/mimic.deb" >/dev/null
-curl -fL --connect-timeout 4 --max-time 25 "$deb2" -o "$tmp/mimic-dkms.deb" >/dev/null
+curl -fL --connect-timeout 4 --max-time 25 "$deb1" -o "$tmp/mimic.deb" >/dev/null || { echo "DOWNLOAD_MIMIC_FAILED: $deb1"; exit 8; }
+curl -fL --connect-timeout 4 --max-time 25 "$deb2" -o "$tmp/mimic-dkms.deb" >/dev/null || { echo "DOWNLOAD_MIMIC_DKMS_FAILED: $deb2"; exit 8; }
 if ! dpkg-deb -I "$tmp/mimic.deb" >/dev/null 2>&1; then
   echo "INVALID_MIMIC_DEB"
   exit 8

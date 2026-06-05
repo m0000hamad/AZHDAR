@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.2.1"
+SCRIPT_VERSION="3.2.2"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -46,29 +46,44 @@ azhdar_normalize_update_base_url(){
 azhdar_normalize_update_base_url
 
 # Asset mirrors (useful when GitHub is filtered).
+# Public name shown in messages: m0000hamad
+ASSET_MIRROR_NAME_DEFAULT="m0000hamad"
+ASSET_MIRROR_NAME="${ASSET_MIRROR_NAME:-$ASSET_MIRROR_NAME_DEFAULT}"
 ASSET_MIRROR_BASE_DEFAULT="https://dl.digitsell.shop/api/public/dl/Wf-XKNL9"
 ASSET_MIRROR_BASE="${ASSET_MIRROR_BASE:-$ASSET_MIRROR_BASE_DEFAULT}"
 
-# Accept either File Browser share URLs or direct API download bases for mirrors.
-# Examples:
-#   https://dl.digitsell.shop/share/Wf-XKNL9
-#   https://dl.digitsell.shop/api/public/share/Wf-XKNL9
-#   https://dl.digitsell.shop/api/public/dl/Wf-XKNL9
-case "${ASSET_MIRROR_BASE%/}" in
-  */share/*)
-    _az_mirror_tmp="${ASSET_MIRROR_BASE%/}"
-    _az_mirror_share="${_az_mirror_tmp##*/share/}"
-    _az_mirror_root="${_az_mirror_tmp%%/share/*}"
-    ASSET_MIRROR_BASE="${_az_mirror_root}/api/public/dl/${_az_mirror_share}"
-    ;;
-  */api/public/share/*)
-    _az_mirror_tmp="${ASSET_MIRROR_BASE%/}"
-    _az_mirror_share="${_az_mirror_tmp##*/api/public/share/}"
-    _az_mirror_root="${_az_mirror_tmp%%/api/public/share/*}"
-    ASSET_MIRROR_BASE="${_az_mirror_root}/api/public/dl/${_az_mirror_share}"
-    ;;
-esac
-unset _az_mirror_tmp _az_mirror_share _az_mirror_root 2>/dev/null || true
+azhdar_normalize_asset_mirror_base(){
+  # Older builds and profiles may still point to legacy mirror hosts or the old direct IP.
+  # Reset only known-bad legacy values, then normalize File Browser share URLs
+  # to the stable public download API.
+  local u="${ASSET_MIRROR_BASE:-}"
+  u="${u%/}"
+  case "$u" in
+    ""|*atil.ir*|*62.60.184.163*)
+      ASSET_MIRROR_BASE="$ASSET_MIRROR_BASE_DEFAULT"
+      ;;
+    *)
+      ASSET_MIRROR_BASE="$u"
+      ;;
+  esac
+
+  case "${ASSET_MIRROR_BASE%/}" in
+    */share/*)
+      _az_mirror_tmp="${ASSET_MIRROR_BASE%/}"
+      _az_mirror_share="${_az_mirror_tmp##*/share/}"
+      _az_mirror_root="${_az_mirror_tmp%%/share/*}"
+      ASSET_MIRROR_BASE="${_az_mirror_root}/api/public/dl/${_az_mirror_share}"
+      ;;
+    */api/public/share/*)
+      _az_mirror_tmp="${ASSET_MIRROR_BASE%/}"
+      _az_mirror_share="${_az_mirror_tmp##*/api/public/share/}"
+      _az_mirror_root="${_az_mirror_tmp%%/api/public/share/*}"
+      ASSET_MIRROR_BASE="${_az_mirror_root}/api/public/dl/${_az_mirror_share}"
+      ;;
+  esac
+  unset _az_mirror_tmp _az_mirror_share _az_mirror_root 2>/dev/null || true
+}
+azhdar_normalize_asset_mirror_base
 
 # Default candidates (ports that typically blend in)
 WG_PORT_CANDIDATES=(443 8443 2053 2083 2087 2096 8080 80 4443 9443)

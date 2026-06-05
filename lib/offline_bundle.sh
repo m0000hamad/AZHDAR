@@ -189,8 +189,8 @@ install_mimic_apt_only(){
 " "$urls" | grep -E "/${codename}_mimic-dkms_[^/]*_amd64\.deb$" | head -n1 || true)"
 
   # Mirror fallback (useful when GitHub is blocked). You can override:
-  #   export AZHDAR_MIRROR_BASE="https://atil.ir/files/azhdar"
-  local MIRROR_BASE="${AZHDAR_MIRROR_BASE:-https://atil.ir/files/azhdar}"
+  #   export AZHDAR_MIRROR_BASE="https://dl.digitsell.shop/api/public/dl/Wf-XKNL9"
+  local MIRROR_BASE="${AZHDAR_MIRROR_BASE:-https://dl.digitsell.shop/api/public/dl/Wf-XKNL9}"
   if [[ -z "$deb1" || -z "$deb2" ]]; then
     deb1="${MIRROR_BASE}/${codename}_mimic_0.7.0-1_amd64.deb"
     deb2="${MIRROR_BASE}/${codename}_mimic-dkms_0.7.0-1_amd64.deb"

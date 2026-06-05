@@ -31,6 +31,7 @@ load_global(){
   source "$GLOBAL_STATE" 2>/dev/null || true
   eval "${_opts}"
   azhdar_normalize_update_base_url 2>/dev/null || true
+  azhdar_normalize_asset_mirror_base 2>/dev/null || true
   GLOBAL_CURRENT="${CURRENT_PROFILE:-}"
 }
 
