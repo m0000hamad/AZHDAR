@@ -1,0 +1,12 @@
+[Unit]
+Description=Run AZHDAR tunnel auto-repair watchdog periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+RandomizedDelaySec=30s
+Persistent=true
+Unit=azhdar-watchdog.service
+
+[Install]
+WantedBy=timers.target

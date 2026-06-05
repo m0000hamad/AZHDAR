@@ -1,0 +1,11 @@
+[Unit]
+Description=AZHDAR tunnel auto-repair watchdog
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/azhdar
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/azhdar --watchdog
+Nice=10
+IOSchedulingClass=best-effort

@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# AZHDAR (modular) v3.1.15
+set -Eeuo pipefail
+umask 077
+
+# Resolve install root (works from source tree and when installed)
+_this="$(readlink -f "${BASH_SOURCE[0]}")"
+AZHDAR_HOME="$(cd "$(dirname "$_this")" && pwd)"
+# In source tree, executable is at repo root; libs in ./lib. In installed layout, same.
+LIB_DIR="${AZHDAR_HOME}/lib"
+
+# shellcheck source=/dev/null
+source "${LIB_DIR}/core.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/profiles.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/deps.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/ssh.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/ports.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/wg_keys.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/ip.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/ipv6.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/mimic_install.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/mimic_configs.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/wg_configs.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/firewall.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/services.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/diagnostics.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/preflight.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/wizard_install.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/offline_bundle.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/cleanup.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/recovery.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/tunnel_repair.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/wizard_profile_add.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/menu_helpers.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/status_board.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/main_menu.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/ssh_fallback.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/advanced_tunnel_ip.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/migrate_legacy.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/update.sh"
+# shellcheck source=/dev/null
+source "${LIB_DIR}/entry.sh"
+
+usage(){
+  cat <<EOF
+AZHDAR v${SCRIPT_VERSION}
+
+Usage:
+  azhdar                 Run interactive menu
+  azhdar --boot          Safe local apply at boot (for systemd)
+  azhdar --repair-tunnel Manual tunnel repair for active profile
+  azhdar --watchdog      Auto-check tunnel and repair if enabled
+  azhdar --recover-ir    Emergency IR runtime cleanup (no SSHD changes)
+  azhdar --update        Open update menu
+  azhdar --version       Print version
+  azhdar --help          Show this help
+EOF
+}
+
+case "${1:-}" in
+  --repair-tunnel|--repair)
+    shift
+    azhdar_repair_tunnel "$@"
+    ;;
+  --watchdog|--auto-repair-watchdog)
+    shift
+    azhdar_tunnel_watchdog "$@"
+    ;;
+  --recover-ir|--recovery-ir)
+    shift
+    azhdar_recover_ir_runtime "$@"
+    ;;
+  --boot)
+    shift
+    azhdar_boot "$@"
+    ;;
+  --update)
+    shift
+    azhdar_update_menu "$@"
+    ;;
+  --version|-v)
+    echo "AZHDAR v${SCRIPT_VERSION}"
+    ;;
+  --help|-h)
+    usage
+    ;;
+  *)
+    azhdar_main "$@"
+    ;;
+esac
