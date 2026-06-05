@@ -453,34 +453,6 @@ ports_suggest_forward_tcp_free_near(){
   return 1
 }
 
-ports_suggest_forward_tcp_free_preferred(){
-  # usage: ports_suggest_forward_tcp_free_preferred <desired_port> [range]
-  # First try a user-facing friendly list (8443, Cloudflare-style HTTPS
-  # alternates, etc.) while respecting the CURRENT profile's WG_PORT. This
-  # prevents the tunnel port (for example 443) from being offered again as a
-  # public TCP forward port.
-  local desired="${1:-443}" range="${2:-${AZHDAR_PORT_RANGE:-}}" p
-  [[ "$desired" =~ ^[0-9]{1,5}$ ]] || desired="443"
-
-  ports_build_registry
-
-  if ports_forward_tcp_candidate_ok "$desired"; then
-    echo "$desired"
-    return 0
-  fi
-
-  local -a preferred=(8443 443 2053 2083 2087 2096 8080 80 4443 9443 10443 11443)
-  for p in "${preferred[@]}"; do
-    [[ "$p" == "$desired" ]] && continue
-    if ports_forward_tcp_candidate_ok "$p"; then
-      echo "$p"
-      return 0
-    fi
-  done
-
-  ports_suggest_forward_tcp_free_near "$desired" "$range"
-}
-
 ports_auto_fix_forward_tcp_ports(){
   # Mutates FORWARD_TCP_PORTS. In Smart Wizard this prevents a conflict from
   # blocking install: invalid/conflicting public TCP ports are replaced by the
@@ -512,7 +484,7 @@ ports_auto_fix_forward_tcp_ports(){
       continue
     fi
 
-    sug="$(ports_suggest_forward_tcp_free_preferred "$p" || true)"
+    sug="$(ports_suggest_forward_tcp_free_near "$p" || true)"
     if [[ -n "$sug" ]] && ports_csv_contains "$out" "$sug"; then
       # Avoid duplicates that may have been introduced earlier in this same list.
       local q

@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.2.7"
+SCRIPT_VERSION="3.2.6"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"

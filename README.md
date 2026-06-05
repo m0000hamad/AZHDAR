@@ -1,12 +1,8 @@
-# AZHDAR (modular) v3.2.7
+# AZHDAR (modular) v3.2.6
 
-## AZHDAR v3.2.7 Smart Wizard
+## AZHDAR v3.2.6 Smart Wizard
 
 Changes in this build:
-
-- Fixes Smart/normal wizard port suggestions so `WG_PORT` is reserved first and never suggested again as the user-facing TCP forward port.
-- Prints an explicit hint such as: tunnel uses `WG_PORT=443`, suggested public TCP forward port is `8443` when free.
-- Makes Mimic package downloads retry with a relaxed curl path before falling back or failing, fixing false Smart Wizard download errors when manual curl works.
 
 - Added **Smart Wizard / one-step install** in the main menu.
 - Smart Wizard uses the selected profile's existing OUT SSH settings and only asks:
@@ -20,7 +16,7 @@ Smart Wizard keeps the classic wizard path intact. Use the classic wizard when y
 
 AZHDAR is a modular manager for WireGuard over Mimic (eBPF) with isolated profiles.
 
-## AZHDAR v3.2.7 profile port fixes
+## AZHDAR v3.2.6 profile port fixes
 
 - Fixes adding a second profile when the first profile uses `WG_PORT=443` and the new profile uses a different tunnel port such as `8443`.
 - Preserves an explicitly empty `FORWARD_TCP_PORTS` value instead of silently restoring it to `443` on profile load.
@@ -51,7 +47,7 @@ Updates are auto-discovered from a directory listing (`UPDATE_BASE_URL`, default
 
 > The update package must include `scripts/install.sh` (like this ZIP).
 
-## AZHDAR v3.2.7 tunnel repair
+## AZHDAR v3.2.6 tunnel repair
 
 This build adds a conservative tunnel repair path for operational servers:
 
@@ -64,7 +60,7 @@ This build adds a conservative tunnel repair path for operational servers:
 
 Mimic fallback mirror name: m0000hamad (`https://dl.digitsell.shop/share/Wf-XKNL9`).
 
-## AZHDAR v3.2.7 service detection fixes
+## AZHDAR v3.2.6 service detection fixes
 
 - Forces Mimic `xdp_mode = skb` in generated configs for better VPS/virtual NIC compatibility.
 - Starts and restarts the correct per-interface service `mimic@<wan>` automatically.
