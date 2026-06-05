@@ -106,6 +106,7 @@ _update_pick_latest_zip(){
 
 azhdar_update_check(){
   # Sets: UPDATE_LATEST_VERSION UPDATE_PACKAGE_URL UPDATE_PACKAGE_ZIP
+  azhdar_normalize_update_base_url 2>/dev/null || true
   local base="${UPDATE_BASE_URL:-}"
   if [[ -z "$base" ]]; then
     base="https://dl.digitsell.shop/share/gZ1XGygF"
@@ -211,6 +212,7 @@ azhdar_update_apply(){
 }
 
 azhdar_update_menu(){
+  azhdar_normalize_update_base_url 2>/dev/null || true
   banner
   echo -e "${BOLD}${WHT}AZHDAR Update${RST}"
   hr

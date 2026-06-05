@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.2.0"
+SCRIPT_VERSION="3.2.1"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -24,6 +24,26 @@ LOG_FILE="${BASE_DIR}/manager.log"
 # Self-update (auto-discover latest zip from directory listing).
 UPDATE_BASE_URL_DEFAULT="https://dl.digitsell.shop/share/gZ1XGygF"
 UPDATE_BASE_URL="${UPDATE_BASE_URL:-$UPDATE_BASE_URL_DEFAULT}"
+
+azhdar_normalize_update_base_url(){
+  # Keep the updater independent from the Mimic asset mirror. Older installs may
+  # have saved Wf-XKNL9 / legacy-IP URLs in global.env; reset only those known-bad
+  # values while still allowing deliberate custom update mirrors.
+  local u="${UPDATE_BASE_URL:-}"
+  u="${u%/}"
+  case "$u" in
+    ""|*Wf-XKNL9*|*62.60.184.163*)
+      UPDATE_BASE_URL="$UPDATE_BASE_URL_DEFAULT"
+      ;;
+    */api/public/dl/gZ1XGygF)
+      UPDATE_BASE_URL="https://dl.digitsell.shop/share/gZ1XGygF"
+      ;;
+    */api/public/share/gZ1XGygF)
+      UPDATE_BASE_URL="https://dl.digitsell.shop/share/gZ1XGygF"
+      ;;
+  esac
+}
+azhdar_normalize_update_base_url
 
 # Asset mirrors (useful when GitHub is filtered).
 ASSET_MIRROR_BASE_DEFAULT="https://dl.digitsell.shop/api/public/dl/Wf-XKNL9"

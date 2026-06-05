@@ -1,4 +1,4 @@
-# AZHDAR (modular) v3.2.0
+# AZHDAR (modular) v3.2.1
 
 AZHDAR is a modular manager for WireGuard over Mimic (eBPF) with isolated profiles.
 
@@ -23,11 +23,11 @@ systemctl restart azhdar.service
 
 ## In-menu update
 The startup screen includes `Update AZHDAR`.
-Updates are auto-discovered from a directory listing (`UPDATE_BASE_URL`, default: https://37.32.26.129/azhdar) by scanning for `azhdar-X.Y.Z.zip` and picking the newest semver.
+Updates are auto-discovered from a directory listing (`UPDATE_BASE_URL`, default: https://dl.digitsell.shop/share/gZ1XGygF) by scanning for `azhdar-X.Y.Z.zip` and picking the newest semver.
 
 > The update package must include `scripts/install.sh` (like this ZIP).
 
-## AZHDAR v3.2.0 tunnel repair
+## AZHDAR v3.2.1 tunnel repair
 
 This build adds a conservative tunnel repair path for operational servers:
 

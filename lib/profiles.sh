@@ -30,10 +30,12 @@ load_global(){
   # shellcheck disable=SC1090
   source "$GLOBAL_STATE" 2>/dev/null || true
   eval "${_opts}"
+  azhdar_normalize_update_base_url 2>/dev/null || true
   GLOBAL_CURRENT="${CURRENT_PROFILE:-}"
 }
 
 save_global(){
+  azhdar_normalize_update_base_url 2>/dev/null || true
   {
     printf 'CURRENT_PROFILE=%s\n' "$(q "${CURRENT_PROFILE:-}")"
     printf 'UPDATE_BASE_URL=%s\n' "$(q "${UPDATE_BASE_URL:-}")"
