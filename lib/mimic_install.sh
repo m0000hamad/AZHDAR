@@ -34,15 +34,37 @@ curl_fetch_fast(){
     "$url" -o "$out" >/dev/null 2>&1
 }
 
+curl_fetch_relaxed(){
+  # Manual curl often succeeds even when the fast path aborts because of
+  # speed limits or short max-time. Use this second pass before blaming the
+  # mirror/GitHub URL.
+  local url="$1" out="$2"
+  curl -fL \
+    --connect-timeout 10 \
+    --max-time 180 \
+    --retry 2 --retry-delay 2 --retry-max-time 80 \
+    "$url" -o "$out" >/dev/null 2>&1
+}
+
 fetch_with_fallback(){
   # usage: fetch_with_fallback <primary_url> <fallback_url> <out>
-  # tries primary first; if blocked/slow/fails, tries fallback.
+  # Tries fast primary/fallback first, then relaxed primary/fallback. This
+  # fixes false failures where manual curl works but Smart Wizard's strict
+  # downloader timed out too early.
   local primary="$1" fallback="$2" out="$3"
   if [[ -n "$primary" ]] && curl_fetch_fast "$primary" "$out"; then
     return 0
   fi
-  [[ -n "$fallback" ]] || return 1
-  curl_fetch_fast "$fallback" "$out"
+  if [[ -n "$fallback" ]] && curl_fetch_fast "$fallback" "$out"; then
+    return 0
+  fi
+  if [[ -n "$primary" ]] && curl_fetch_relaxed "$primary" "$out"; then
+    return 0
+  fi
+  if [[ -n "$fallback" ]] && curl_fetch_relaxed "$fallback" "$out"; then
+    return 0
+  fi
+  return 1
 }
 
 asset_mirror_share_api_url(){
@@ -404,25 +426,42 @@ rm -rf "$tmp"; mkdir -p "$tmp"; chmod 755 "$tmp" 2>/dev/null || true
 fb1="${MIMIC_FB_DEB:-}"
 fb2="${MIMIC_FB_DKMS:-}"
 
-latest_json="$(curl -fsSL --max-time 6 https://api.github.com/repos/hack3ric/mimic/releases/latest 2>/dev/null || true)"
+latest_json="$(curl -fsSL --connect-timeout 6 --max-time 20 https://api.github.com/repos/hack3ric/mimic/releases/latest 2>/dev/null || true)"
 urls="$(printf "%s" "$latest_json" | sed -n 's/.*"browser_download_url"[ ]*:[ ]*"\([^"]*\)".*/\1/p')"
 
-deb1="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic_[^/]*_amd64\.deb$" | head -n1 || true)"
-deb2="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic-dkms_[^/]*_amd64\.deb$" | head -n1 || true)"
+primary1="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic_[^/]*_amd64\.deb$" | head -n1 || true)"
+primary2="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic-dkms_[^/]*_amd64\.deb$" | head -n1 || true)"
 
-if [ -z "$deb1" ] || [ -z "$deb2" ]; then
+if [ -z "$primary1" ] || [ -z "$primary2" ]; then
   if [ -n "$fb1" ] && [ -n "$fb2" ]; then
     echo "GITHUB_BLOCKED_OR_NO_ASSETS: using ${ASSET_MIRROR_NAME:-m0000hamad} mirror"
-    deb1="$fb1"
-    deb2="$fb2"
   else
     echo "NO_ASSETS_FOR_${codename}"
     exit 6
   fi
 fi
 
-curl -fL --connect-timeout 4 --max-time 25 "$deb1" -o "$tmp/mimic.deb" >/dev/null || { echo "DOWNLOAD_MIMIC_FAILED: $deb1"; exit 8; }
-curl -fL --connect-timeout 4 --max-time 25 "$deb2" -o "$tmp/mimic-dkms.deb" >/dev/null || { echo "DOWNLOAD_MIMIC_DKMS_FAILED: $deb2"; exit 8; }
+fetch_remote_with_fallback(){
+  primary="$1"
+  fallback="$2"
+  out="$3"
+  if [ -n "$primary" ] && curl -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 "$primary" -o "$out" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -n "$fallback" ] && curl -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 "$fallback" -o "$out" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -n "$primary" ] && curl -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 "$primary" -o "$out" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -n "$fallback" ] && curl -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 "$fallback" -o "$out" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+fetch_remote_with_fallback "$primary1" "$fb1" "$tmp/mimic.deb" || { echo "DOWNLOAD_MIMIC_FAILED: primary=${primary1:-none} fallback=${fb1:-none}"; exit 8; }
+fetch_remote_with_fallback "$primary2" "$fb2" "$tmp/mimic-dkms.deb" || { echo "DOWNLOAD_MIMIC_DKMS_FAILED: primary=${primary2:-none} fallback=${fb2:-none}"; exit 8; }
 if ! dpkg-deb -I "$tmp/mimic.deb" >/dev/null 2>&1; then
   echo "INVALID_MIMIC_DEB"
   exit 8

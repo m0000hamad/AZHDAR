@@ -321,19 +321,59 @@ esac
     echo -e "${BOLD}${WHT}Smart Wizard ports${RST}"
     hr
     echo -e "${DIM}This is the only interactive step: public TCP users connect to on IR, and target/service port on OUT.${RST}"
-    local smart_public_tcp="" smart_default_tcp="${FORWARD_TCP_PORTS%%,*}"
-    [[ -n "$smart_default_tcp" ]] || smart_default_tcp="443"
+
+    # Smart mode is going to ask for fresh forward ports, so stale saved
+    # FORWARD_TCP_PORTS must not push the tunnel suggestion away. Reserve the
+    # tunnel port first, then suggest a DIFFERENT public TCP forward port.
+    local _saved_forward_tcp="${FORWARD_TCP_PORTS:-}" _saved_forward_udp="${FORWARD_UDP_PORTS:-}"
+    FORWARD_TCP_PORTS=""
+    FORWARD_UDP_PORTS=""
+
+    local _wg_ok="0" _wg_base="${WG_PORT:-443}"
+    ports_build_registry
+    if [[ "${WG_PORT:-}" =~ ^[0-9]{1,5}$ ]] && ports_wg_port_candidate_ok "${WG_PORT}" && ! local_port_in_use "${WG_PORT}"; then
+      if ssh_check_quiet; then
+        remote_port_in_use "${WG_PORT}" || _wg_ok="1"
+      else
+        _wg_ok="1"
+      fi
+    fi
+    if [[ "$_wg_ok" != "1" ]]; then
+      suggested="$(suggest_wg_port || true)"
+      [[ -z "$suggested" ]] && suggested="$(ports_suggest_wg_free_near "${_wg_base}" || true)"
+      if [[ -n "$suggested" ]]; then
+        WG_PORT="$suggested"
+      fi
+    fi
+    if [[ -z "${WG_PORT:-}" ]]; then
+      err "Smart Wizard could not find a usable WireGuard/Mimic tunnel port."
+      pause
+      return 1
+    fi
+
+    local smart_default_tcp="${_saved_forward_tcp%%,*}"
+    if [[ -z "$smart_default_tcp" || "$smart_default_tcp" == "${WG_PORT}" ]]; then
+      if [[ "${WG_PORT}" == "443" ]]; then
+        smart_default_tcp="8443"
+      else
+        smart_default_tcp="443"
+      fi
+    fi
+    smart_default_tcp="$(ports_suggest_forward_tcp_free_preferred "$smart_default_tcp" || true)"
+    [[ -n "$smart_default_tcp" ]] || smart_default_tcp="$(ports_suggest_forward_tcp_free_near "8443" || true)"
+    if [[ -z "$smart_default_tcp" ]]; then
+      err "Smart Wizard could not find a usable public TCP forward port."
+      pause
+      return 1
+    fi
+
+    info "Smart Wizard reserved tunnel port: WG_PORT=${WG_PORT}. Do not use this as the public TCP user port."
+    info "Suggested public TCP user port: ${smart_default_tcp} (checked free on IR and not reserved by AZHDAR)."
+    local smart_public_tcp=""
     smart_public_tcp="$(prompt_port "Public TCP port users connect to on IR" "$smart_default_tcp")"
     VLESS_DST_PORT="$(prompt_port "Target port on OUT (service bind port)" "${VLESS_DST_PORT:-2086}")"
     FORWARD_TCP_PORTS="$smart_public_tcp"
     FORWARD_UDP_PORTS=""
-
-    # Pick the tunnel/WG port after the public TCP port so we avoid the user's port.
-    suggested="$(suggest_wg_port || true)"
-    [[ -z "$suggested" ]] && suggested="$(ports_suggest_wg_free_near "${WG_PORT:-443}" || true)"
-    if [[ -n "$suggested" ]]; then
-      WG_PORT="$suggested"
-    fi
 
     ports_auto_fix_forward_tcp_ports || true
     if [[ -z "${FORWARD_TCP_PORTS:-}" ]]; then
@@ -346,8 +386,7 @@ esac
       pause
       return 1
     fi
-    info "Smart Wizard selected tunnel port automatically: WG_PORT=${WG_PORT}"
-    info "Smart Wizard reverse-forward: IR TCP ${FORWARD_TCP_PORTS} -> OUT target port ${VLESS_DST_PORT}"
+    info "Smart Wizard final ports: tunnel WG_PORT=${WG_PORT}; public TCP=${FORWARD_TCP_PORTS}; OUT target=${VLESS_DST_PORT}"
   else
     # Port selection (auto-suggest + optional override)
     suggested="$(suggest_wg_port || true)"
@@ -389,8 +428,21 @@ esac
     local rf_default="Y"
     if [[ "$(prompt_yesno "Enable reverse-forward rules on IR?" "$rf_default")" == "Y" ]]; then
       while true; do
-        read -rp "Public TCP port(s) on IR to forward (comma-separated, empty=none) [${FORWARD_TCP_PORTS}]: " FORWARD_TCP_PORTS || true
-        FORWARD_TCP_PORTS="${FORWARD_TCP_PORTS:-}"
+        local _fwd_default="${FORWARD_TCP_PORTS%%,*}" _fwd_answer=""
+        if [[ -z "$_fwd_default" || "$_fwd_default" == "${WG_PORT:-}" ]]; then
+          if [[ "${WG_PORT:-}" == "443" ]]; then
+            _fwd_default="8443"
+          else
+            _fwd_default="443"
+          fi
+        fi
+        _fwd_default="$(ports_suggest_forward_tcp_free_preferred "$_fwd_default" || true)"
+        [[ -n "$_fwd_default" ]] || _fwd_default="$(ports_suggest_forward_tcp_free_near "8443" || true)"
+        if [[ -n "${WG_PORT:-}" && -n "$_fwd_default" ]]; then
+          info "Tunnel public port is WG_PORT=${WG_PORT}. The user-facing TCP forward port must be different; suggested free TCP port: ${_fwd_default}."
+        fi
+        read -rp "Public TCP port(s) on IR to forward (comma-separated) [${_fwd_default}]: " _fwd_answer || true
+        FORWARD_TCP_PORTS="${_fwd_answer:-${_fwd_default}}"
         ports_auto_fix_forward_tcp_ports || true
         read -rp "Public UDP port(s) on IR to forward (comma-separated, empty=none) [${FORWARD_UDP_PORTS}]: " FORWARD_UDP_PORTS || true
         FORWARD_UDP_PORTS="${FORWARD_UDP_PORTS:-}"
@@ -400,7 +452,7 @@ esac
           break
         fi
 
-        warn "One of the forward ports conflicts with another profile. Please re-enter only the forwarding ports, or leave them empty to disable forwarding."
+        warn "One of the forward ports conflicts with the tunnel port or another profile. Please re-enter only the forwarding ports, or answer N to disable forwarding."
       done
     else
       FORWARD_TCP_PORTS=""
