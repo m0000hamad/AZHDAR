@@ -54,7 +54,7 @@ wg_account_prompt_and_import(){
       FORWARD_DST_IP=""
     fi
     ports_validate_current_or_warn && break
-    warn "Forward ports conflict with another profile. Please re-enter."
+    warn "One of the forward ports conflicts with another profile. Please re-enter only the forwarding ports, or leave them empty to disable forwarding."
   done
 
   local meta=""

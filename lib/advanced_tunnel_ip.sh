@@ -720,7 +720,7 @@ menu_advanced(){
               continue
             fi
           fi
-          warn "WG_PORT conflicts with another profile. Choose a different port."
+          warn "Selected tunnel/forward port conflicts with another profile. Check the warning above and choose a different port."
         done
         OLD_WG_PORT="$old_port"
         profile_save

@@ -318,6 +318,234 @@ protect_ir_ssh_port(){
   fi
 }
 
+ports_csv_contains(){
+  # usage: ports_csv_contains "443,8443" "443"
+  local list="${1:-}" needle="${2:-}" p
+  [[ -n "$needle" ]] || return 1
+  while read -r p; do
+    [[ -n "$p" ]] || continue
+    [[ "$p" == "$needle" ]] && return 0
+  done < <(ports_split_csv "$list")
+  return 1
+}
+
+ports_wg_port_candidate_ok(){
+  # WG public port reserves both TCP and UDP in AZHDAR's registry.
+  # Return 0 only when neither protocol is reserved and it is not the IR SSH
+  # guard port or a public forward port in the CURRENT profile.
+  local p="${1:-}"
+  [[ "$p" =~ ^[0-9]{1,5}$ ]] || return 1
+  (( p >= 1 && p <= 65535 )) || return 1
+  [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]] && return 1
+  [[ -n "${PORT_REG_PROFILE[tcp:${p}]:-}" ]] && return 1
+  [[ -n "${PORT_REG_PROFILE[udp:${p}]:-}" ]] && return 1
+  ports_csv_contains "${FORWARD_TCP_PORTS:-}" "$p" && return 1
+  ports_csv_contains "${FORWARD_UDP_PORTS:-}" "$p" && return 1
+  return 0
+}
+
+ports_suggest_wg_free_near(){
+  # usage: ports_suggest_wg_free_near <desired_port> [range]
+  # Unlike ports_suggest_free_near tcp, this checks BOTH tcp:<port> and udp:<port>
+  # because WG_PORT is reserved as a public tunnel port for both protocols.
+  local desired="${1:-443}" range="${2:-${AZHDAR_PORT_RANGE:-}}"
+  [[ "$desired" =~ ^[0-9]{1,5}$ ]] || desired="443"
+  local lo=1024 hi=65000
+  if [[ -n "$range" ]]; then
+    local rr
+    rr="$(parse_port_range "$range" 2>/dev/null || true)"
+    if [[ -n "$rr" ]]; then
+      lo="${rr%% *}"; hi="${rr##* }"
+    fi
+  fi
+
+  ports_build_registry
+
+  local max_delta="${AZHDAR_PORT_SUGGEST_DELTA:-250}"
+  local d p
+  for ((d=0; d<=max_delta; d++)); do
+    p=$((desired + d))
+    if (( p >= lo && p <= hi )) && ports_wg_port_candidate_ok "$p"; then
+      if ! local_port_in_use "$p"; then
+        if ssh_check_quiet; then
+          remote_port_in_use "$p" || { echo "$p"; return 0; }
+        else
+          echo "$p"; return 0
+        fi
+      fi
+    fi
+    (( d == 0 )) && continue
+    p=$((desired - d))
+    if (( p >= lo && p <= hi )) && ports_wg_port_candidate_ok "$p"; then
+      if ! local_port_in_use "$p"; then
+        if ssh_check_quiet; then
+          remote_port_in_use "$p" || { echo "$p"; return 0; }
+        else
+          echo "$p"; return 0
+        fi
+      fi
+    fi
+  done
+
+  local start="$desired" q
+  (( start < lo )) && start="$lo"
+  (( start > hi )) && start="$lo"
+  for ((q=start; q<=hi; q++)); do
+    ports_wg_port_candidate_ok "$q" || continue
+    local_port_in_use "$q" && continue
+    if ssh_check_quiet; then
+      remote_port_in_use "$q" && continue
+    fi
+    echo "$q"; return 0
+  done
+  echo ""
+  return 1
+}
+
+ports_forward_tcp_candidate_ok(){
+  # Return 0 if a public TCP forward port can be used on IR.
+  local p="${1:-}"
+  [[ "$p" =~ ^[0-9]{1,5}$ ]] || return 1
+  (( p >= 1 && p <= 65535 )) || return 1
+  [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]] && return 1
+  [[ -n "${WG_PORT:-}" && "$p" == "${WG_PORT}" ]] && return 1
+  [[ -n "${PORT_REG_PROFILE[tcp:${p}]:-}" ]] && return 1
+  local_port_in_use "$p" && return 1
+  return 0
+}
+
+ports_suggest_forward_tcp_free_near(){
+  # usage: ports_suggest_forward_tcp_free_near <desired_port> [range]
+  local desired="${1:-443}" range="${2:-${AZHDAR_PORT_RANGE:-}}"
+  [[ "$desired" =~ ^[0-9]{1,5}$ ]] || desired="443"
+  local lo=1024 hi=65000
+  if [[ -n "$range" ]]; then
+    local rr
+    rr="$(parse_port_range "$range" 2>/dev/null || true)"
+    if [[ -n "$rr" ]]; then
+      lo="${rr%% *}"; hi="${rr##* }"
+    fi
+  fi
+
+  ports_build_registry
+  local max_delta="${AZHDAR_PORT_SUGGEST_DELTA:-250}"
+  local d p
+  for ((d=0; d<=max_delta; d++)); do
+    p=$((desired + d))
+    if (( p >= lo && p <= hi )) && ports_forward_tcp_candidate_ok "$p"; then
+      echo "$p"; return 0
+    fi
+    (( d == 0 )) && continue
+    p=$((desired - d))
+    if (( p >= lo && p <= hi )) && ports_forward_tcp_candidate_ok "$p"; then
+      echo "$p"; return 0
+    fi
+  done
+
+  local start="$desired" q
+  (( start < lo )) && start="$lo"
+  (( start > hi )) && start="$lo"
+  for ((q=start; q<=hi; q++)); do
+    ports_forward_tcp_candidate_ok "$q" || continue
+    echo "$q"; return 0
+  done
+  echo ""
+  return 1
+}
+
+ports_suggest_forward_tcp_free_preferred(){
+  # usage: ports_suggest_forward_tcp_free_preferred <desired_port> [range]
+  # First try a user-facing friendly list (8443, Cloudflare-style HTTPS
+  # alternates, etc.) while respecting the CURRENT profile's WG_PORT. This
+  # prevents the tunnel port (for example 443) from being offered again as a
+  # public TCP forward port.
+  local desired="${1:-443}" range="${2:-${AZHDAR_PORT_RANGE:-}}" p
+  [[ "$desired" =~ ^[0-9]{1,5}$ ]] || desired="443"
+
+  ports_build_registry
+
+  if ports_forward_tcp_candidate_ok "$desired"; then
+    echo "$desired"
+    return 0
+  fi
+
+  local -a preferred=(8443 443 2053 2083 2087 2096 8080 80 4443 9443 10443 11443)
+  for p in "${preferred[@]}"; do
+    [[ "$p" == "$desired" ]] && continue
+    if ports_forward_tcp_candidate_ok "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+
+  ports_suggest_forward_tcp_free_near "$desired" "$range"
+}
+
+ports_auto_fix_forward_tcp_ports(){
+  # Mutates FORWARD_TCP_PORTS. In Smart Wizard this prevents a conflict from
+  # blocking install: invalid/conflicting public TCP ports are replaced by the
+  # nearest usable IR port and the replacement is recorded in
+  # AZHDAR_PORT_REPLACEMENTS for the final summary.
+  local src="${FORWARD_TCP_PORTS:-}" out="" p sug reason
+  AZHDAR_PORT_REPLACEMENTS="${AZHDAR_PORT_REPLACEMENTS:-}"
+  ports_build_registry
+
+  while read -r p; do
+    [[ -n "$p" ]] || continue
+    reason=""
+    if ! [[ "$p" =~ ^[0-9]{1,5}$ ]] || (( p < 1 || p > 65535 )); then
+      reason="invalid"
+    elif [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]]; then
+      reason="IR SSH protected port"
+    elif [[ -n "${WG_PORT:-}" && "$p" == "${WG_PORT}" ]]; then
+      reason="tunnel port"
+    elif [[ -n "${PORT_REG_PROFILE[tcp:${p}]:-}" ]]; then
+      reason="reserved by profile ${PORT_REG_PROFILE[tcp:${p}]} (${PORT_REG_KIND[tcp:${p}]:-unknown})"
+    elif local_port_in_use "$p"; then
+      reason="already listening on IR"
+    elif ports_csv_contains "$out" "$p"; then
+      reason="duplicate in this profile"
+    fi
+
+    if [[ -z "$reason" ]]; then
+      if [[ -n "$out" ]]; then out+=",$p"; else out="$p"; fi
+      continue
+    fi
+
+    sug="$(ports_suggest_forward_tcp_free_preferred "$p" || true)"
+    if [[ -n "$sug" ]] && ports_csv_contains "$out" "$sug"; then
+      # Avoid duplicates that may have been introduced earlier in this same list.
+      local q
+      for ((q=sug+1; q<=65000; q++)); do
+        ports_csv_contains "$out" "$q" && continue
+        ports_forward_tcp_candidate_ok "$q" || continue
+        sug="$q"
+        break
+      done
+      ports_csv_contains "$out" "$sug" && sug=""
+    fi
+    if [[ -n "$sug" ]]; then
+      warn "TCP forward port ${p} conflicts (${reason}); Smart Wizard replaced it with ${sug}."
+      if [[ -n "${AZHDAR_PORT_REPLACEMENTS:-}" ]]; then
+        AZHDAR_PORT_REPLACEMENTS+=", ${p}->${sug} (${reason})"
+      else
+        AZHDAR_PORT_REPLACEMENTS="${p}->${sug} (${reason})"
+      fi
+      if [[ -n "$out" ]]; then out+=",$sug"; else out="$sug"; fi
+    else
+      warn "TCP forward port ${p} conflicts (${reason}) and no free replacement was found; skipping it."
+      if [[ -n "${AZHDAR_PORT_REPLACEMENTS:-}" ]]; then
+        AZHDAR_PORT_REPLACEMENTS+=", ${p}->skipped (${reason})"
+      else
+        AZHDAR_PORT_REPLACEMENTS="${p}->skipped (${reason})"
+      fi
+    fi
+  done < <(ports_split_csv "$src")
+
+  FORWARD_TCP_PORTS="$out"
+  export AZHDAR_PORT_REPLACEMENTS
+}
+
 ports_validate_current_or_warn(){
   # Validate that current profile's PUBLIC ports do not overlap with other profiles.
   # Prints warnings and suggestions. Returns 0 if OK, 1 if conflicts.
@@ -325,40 +553,76 @@ ports_validate_current_or_warn(){
   IR_SSH_PORT="${IR_SSH_PORT:-22}"
   ports_build_registry
 
-  # WG_PORT (reserve both tcp+udp)
-  local c
-  if c="$(ports_conflict tcp "${WG_PORT}")"; then
-    local other kind
-    other="${c%% *}"; kind="${c#* }"
-    warn "WG_PORT ${WG_PORT} conflicts with profile '${other}' (${kind})."
-    local sug; sug="$(ports_suggest_free_near tcp "${WG_PORT}" || true)"
-    [[ -n "$sug" ]] && warn "Suggested free port near ${WG_PORT}: ${sug}"
-    bad=1
+  # WG_PORT (reserve both tcp+udp). Empty is valid for imported account profiles.
+  local c="" other="" kind=""
+  if [[ -n "${WG_PORT:-}" ]]; then
+    if ! [[ "${WG_PORT}" =~ ^[0-9]{1,5}$ ]] || (( WG_PORT < 1 || WG_PORT > 65535 )); then
+      warn "Invalid WG_PORT '${WG_PORT}'. Choose a port between 1 and 65535."
+      bad=1
+    else
+      if c="$(ports_conflict tcp "${WG_PORT}")"; then
+        other="${c%% *}"; kind="${c#* }"
+        warn "WG_PORT ${WG_PORT} conflicts with profile '${other}' (${kind})."
+        local sug; sug="$(suggest_wg_port || true)"
+        [[ -z "$sug" || "$sug" == "$WG_PORT" ]] && sug="$(ports_suggest_wg_free_near "${WG_PORT}" || true)"
+        [[ -n "$sug" && "$sug" != "$WG_PORT" ]] && warn "Suggested free tunnel port: ${sug}"
+        bad=1
+      elif c="$(ports_conflict udp "${WG_PORT}")"; then
+        other="${c%% *}"; kind="${c#* }"
+        warn "WG_PORT ${WG_PORT} conflicts with profile '${other}' (${kind}, udp side)."
+        local sug_udp; sug_udp="$(suggest_wg_port || true)"
+        [[ -z "$sug_udp" || "$sug_udp" == "$WG_PORT" ]] && sug_udp="$(ports_suggest_wg_free_near "${WG_PORT}" || true)"
+        [[ -n "$sug_udp" && "$sug_udp" != "$WG_PORT" ]] && warn "Suggested free tunnel port: ${sug_udp}"
+        bad=1
+      fi
+    fi
   fi
-
-
 
   # Never allow the tunnel public port to take over the IR SSH management port.
-  if [[ -n "${IR_SSH_PORT:-}" && "${WG_PORT:-}" == "${IR_SSH_PORT}" ]]; then
+  if [[ -n "${WG_PORT:-}" && -n "${IR_SSH_PORT:-}" && "${WG_PORT:-}" == "${IR_SSH_PORT}" ]]; then
     warn "WG_PORT ${WG_PORT} is the IR SSH exempt port. Choose another tunnel port."
-    local sug_ir; sug_ir="$(ports_suggest_free_near tcp "${WG_PORT}" || true)"
-    [[ -n "$sug_ir" && "$sug_ir" != "$WG_PORT" ]] && warn "Suggested free port near ${WG_PORT}: ${sug_ir}"
+    local sug_ir; sug_ir="$(suggest_wg_port || true)"
+    [[ -z "$sug_ir" || "$sug_ir" == "$WG_PORT" ]] && sug_ir="$(ports_suggest_wg_free_near "${WG_PORT}" || true)"
+    [[ -n "$sug_ir" && "$sug_ir" != "$WG_PORT" ]] && warn "Suggested free tunnel port: ${sug_ir}"
     bad=1
   fi
+
+  # Current-profile overlaps: the tunnel port and public forward ports cannot share the same TCP/UDP port.
+  local curp
+  while read -r curp; do
+    [[ -n "$curp" ]] || continue
+    if [[ -n "${WG_PORT:-}" && "$curp" == "${WG_PORT}" ]]; then
+      warn "Forward TCP port ${curp} conflicts with WG_PORT in this profile."
+      local sug_cur; sug_cur="$(ports_suggest_forward_tcp_free_near "$curp" || true)"
+      [[ -n "$sug_cur" && "$sug_cur" != "$curp" ]] && warn "Suggested free TCP forward port near ${curp}: ${sug_cur}"
+      bad=1
+    fi
+  done < <(ports_split_csv "${FORWARD_TCP_PORTS:-}")
+  while read -r curp; do
+    [[ -n "$curp" ]] || continue
+    if [[ -n "${WG_PORT:-}" && "$curp" == "${WG_PORT}" ]]; then
+      warn "Forward UDP port ${curp} conflicts with WG_PORT in this profile."
+      bad=1
+    fi
+  done < <(ports_split_csv "${FORWARD_UDP_PORTS:-}")
 
   # Forward ports
   local p
   while read -r p; do
     [[ -n "$p" ]] || continue
+    if ! [[ "$p" =~ ^[0-9]{1,5}$ ]] || (( p < 1 || p > 65535 )); then
+      warn "Invalid forward TCP port '${p}'."
+      bad=1
+      continue
+    fi
     if [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]]; then
       warn "Forward TCP port ${p} is the IR SSH exempt port and will be skipped."
       bad=1
     fi
     if c="$(ports_conflict tcp "$p")"; then
-      local other kind
       other="${c%% *}"; kind="${c#* }"
       warn "Forward TCP port ${p} conflicts with profile '${other}' (${kind})."
-      local sug2; sug2="$(ports_suggest_free_near tcp "$p" || true)"
+      local sug2; sug2="$(ports_suggest_forward_tcp_free_near "$p" || true)"
       [[ -n "$sug2" && "$sug2" != "$p" ]] && warn "Suggested free TCP port near ${p}: ${sug2}"
       bad=1
     fi
@@ -366,8 +630,12 @@ ports_validate_current_or_warn(){
 
   while read -r p; do
     [[ -n "$p" ]] || continue
+    if ! [[ "$p" =~ ^[0-9]{1,5}$ ]] || (( p < 1 || p > 65535 )); then
+      warn "Invalid forward UDP port '${p}'."
+      bad=1
+      continue
+    fi
     if c="$(ports_conflict udp "$p")"; then
-      local other kind
       other="${c%% *}"; kind="${c#* }"
       warn "Forward UDP port ${p} conflicts with profile '${other}' (${kind})."
       local sug3; sug3="$(ports_suggest_free_near udp "$p" || true)"
@@ -386,10 +654,7 @@ suggest_wg_port(){
   ports_build_registry
   local p
   for p in "${WG_PORT_CANDIDATES[@]}"; do
-    [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]] && continue
-    # Avoid any reserved PUBLIC port (WG/forward/ssh-fallback) on this host.
-    [[ -n "${PORT_REG_PROFILE[tcp:${p}]:-}" ]] && continue
-    [[ -n "${PORT_REG_PROFILE[udp:${p}]:-}" ]] && continue
+    ports_wg_port_candidate_ok "$p" || continue
     if local_port_in_use "$p"; then
       continue
     fi
@@ -401,7 +666,11 @@ suggest_wg_port(){
     echo "$p"
     return 0
   done
-  echo "${WG_PORT:-443}"
-  return 0
+
+  local near
+  near="$(ports_suggest_wg_free_near "${WG_PORT:-443}" || true)"
+  [[ -n "$near" ]] && { echo "$near"; return 0; }
+  echo ""
+  return 1
 }
 

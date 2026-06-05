@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AZHDAR (modular) v3.2.4
+# AZHDAR (modular) v3.2.7
 set -Eeuo pipefail
 umask 077
 
@@ -76,6 +76,7 @@ Usage:
   azhdar                 Run interactive menu
   azhdar --boot          Safe local apply at boot (for systemd)
   azhdar --repair-tunnel Manual tunnel repair for active profile
+  azhdar --smart-wizard  Run Smart Wizard / one-step install
   azhdar --watchdog      Auto-check tunnel and repair if enabled
   azhdar --recover-ir    Emergency IR runtime cleanup (no SSHD changes)
   azhdar --update        Open update menu
@@ -88,6 +89,17 @@ case "${1:-}" in
   --repair-tunnel|--repair)
     shift
     azhdar_repair_tunnel "$@"
+    ;;
+  --smart-wizard|--smart-install)
+    shift
+    need_root
+    ensure_dirs
+    azhdar_interactive_mode
+    migrate_legacy
+    azhdar_ensure_system_ssh_local || true
+    load_global
+    ensure_profile_selected || exit 1
+    install_smart_wizard "$@"
     ;;
   --watchdog|--auto-repair-watchdog)
     shift

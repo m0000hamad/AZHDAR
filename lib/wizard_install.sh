@@ -115,15 +115,53 @@ REMOTE
   return 0
 }
 
+wizard_print_final_summary(){
+  # Printed directly under the connection indicator at the end of install.
+  local fwd_dst="<none>" out_host="${OUT_PUBLIC_IP:-${OUT_SSH_HOST:-?}}" endpoint=""
+  if [[ "${ENABLE_TUN_IPV4:-1}" == "1" && -n "${OUT_WG_IP:-}" && "${OUT_WG_IP}" != "peer" ]]; then
+    fwd_dst="${OUT_WG_IP}:${VLESS_DST_PORT:-?}"
+  elif [[ "${ENABLE_TUN_IPV6:-0}" == "1" && -n "${OUT_WG_IP6:-}" && "${OUT_WG_IP6}" != "peer" ]]; then
+    fwd_dst="[${OUT_WG_IP6}]:${VLESS_DST_PORT:-?}"
+  elif [[ -n "${FORWARD_DST_IP:-}" ]]; then
+    fwd_dst="${FORWARD_DST_IP}:${VLESS_DST_PORT:-?}"
+  fi
+  endpoint="$(format_ipport "${out_host}" "${WG_PORT:-?}" 2>/dev/null || echo "${out_host}:${WG_PORT:-?}")"
+
+  echo
+  hr
+  echo -e "${BOLD}${WHT}Install summary / connection info${RST}"
+  hr
+  echo -e "${DIM}Profile:${RST} ${PROFILE:-?}"
+  echo -e "${DIM}SSH profile:${RST} ${OUT_SSH_USER:-root}@${OUT_SSH_HOST:-?}:${OUT_SSH_PORT:-22}  transport=${SSH_MGMT_TRANSPORT:-auto}"
+  echo -e "${DIM}Tunnel:${RST} iface=${WG_IF:-?}  public-port=${WG_PORT:-?}  endpoint=${endpoint}  mtu=${MTU:-?}  keepalive=${KEEPALIVE:-?}"
+  echo -e "${DIM}Forwarding:${RST} IR TCP=${FORWARD_TCP_PORTS:-<none>}  IR UDP=${FORWARD_UDP_PORTS:-<none>}  -> OUT ${fwd_dst}"
+  echo -e "${DIM}Protected IR SSH:${RST} ${IR_SSH_PORT:-22}"
+  if [[ -n "${AZHDAR_PORT_REPLACEMENTS:-}" ]]; then
+    echo -e "${YLW}!${RST} Auto port replacement(s): ${AZHDAR_PORT_REPLACEMENTS}"
+  fi
+}
+
 install_wizard(){
+  local smart="${AZHDAR_SMART_WIZARD:-0}"
+  AZHDAR_PORT_REPLACEMENTS=""
   banner
-  echo -e "${BOLD}${WHT}Install / Update / Repair wizard${RST}"
+  if [[ "$smart" == "1" ]]; then
+    echo -e "${BOLD}${WHT}Smart Wizard / one-step install${RST}"
+    echo -e "${DIM}Uses this profile's SSH settings and asks only the public TCP port and target port.${RST}"
+  else
+    echo -e "${BOLD}${WHT}Install / Update / Repair wizard${RST}"
+  fi
   hr
 
   # Basic sanity
   [[ -n "${PROFILE:-}" ]] || die "No active profile. Create/select one first."
 
-  IR_SSH_PORT="$(prompt_port "IR server SSH port to exempt from tunnels/forwarding" "${IR_SSH_PORT:-22}")"
+  if [[ "$smart" == "1" ]]; then
+    IR_SSH_PORT="${IR_SSH_PORT:-22}"
+    info "Smart Wizard: protected IR SSH port=${IR_SSH_PORT}"
+  else
+    IR_SSH_PORT="$(prompt_port "IR server SSH port to exempt from tunnels/forwarding" "${IR_SSH_PORT:-22}")"
+  fi
   protect_ir_ssh_port || true
   azhdar_firewall_safety_local || true
   profile_save
@@ -171,8 +209,10 @@ install_wizard(){
     echo -e "Waiting 6s for handshake..."
     sleep 6
     if connection_indicator; then
+      wizard_print_final_summary
       ok "WireGuard account tunnel is connected."
     else
+      wizard_print_final_summary
       warn "WireGuard service started, but no confirmed handshake yet."
       warn "Check endpoint reachability, DNS, MTU, and forwarding destination from Diagnostics/Status."
     fi
@@ -183,15 +223,42 @@ install_wizard(){
   # Detect and store IR public IP (suggestion)
   local myip=""
   myip="$(public_ipv4 2>/dev/null || true)"
-  [[ -n "$myip" ]] && IR_PUBLIC_IP="${IR_PUBLIC_IP:-$myip}"
-  IR_PUBLIC_IP="$(prompt_ipv4 "IR public IP (this server)" "${IR_PUBLIC_IP:-}")"
+  if [[ "$smart" == "1" ]]; then
+    [[ -n "$myip" ]] && IR_PUBLIC_IP="$myip"
+    if ! is_ipv4 "${IR_PUBLIC_IP:-}"; then
+      err "Smart Wizard could not auto-detect IR public IP. Run normal wizard once, or save IR_PUBLIC_IP in the profile."
+      pause
+      return 1
+    fi
+    info "Smart Wizard: IR public IP=${IR_PUBLIC_IP}"
+  else
+    [[ -n "$myip" ]] && IR_PUBLIC_IP="${IR_PUBLIC_IP:-$myip}"
+    IR_PUBLIC_IP="$(prompt_ipv4 "IR public IP (this server)" "${IR_PUBLIC_IP:-}")"
+  fi
 
   # SSH details (profile)
-  OUT_SSH_HOST="$(prompt_host "OUT server host (SSH)" "${OUT_SSH_HOST:-$OUT_PUBLIC_IP}")"
-  OUT_PUBLIC_IP="${OUT_PUBLIC_IP:-$OUT_SSH_HOST}"
-  OUT_PUBLIC_IP="${OUT_SSH_HOST}"
-  OUT_SSH_PORT="$(prompt_port "OUT SSH port" "${OUT_SSH_PORT:-22}")"
-  OUT_SSH_USER="$(prompt_nonempty "OUT SSH user" "${OUT_SSH_USER:-root}")"
+  if [[ "$smart" == "1" ]]; then
+    OUT_SSH_HOST="${OUT_SSH_HOST:-${OUT_PUBLIC_IP:-}}"
+    OUT_PUBLIC_IP="${OUT_PUBLIC_IP:-$OUT_SSH_HOST}"
+    OUT_SSH_PORT="${OUT_SSH_PORT:-22}"
+    OUT_SSH_USER="${OUT_SSH_USER:-root}"
+    if [[ -z "${OUT_SSH_HOST:-}" ]]; then
+      err "Smart Wizard needs OUT SSH host in the selected profile. Create/fill the profile first."
+      pause
+      return 1
+    fi
+    SSH_FALLBACK_TRANSPORT="direct"
+    SSH_MGMT_TRANSPORT="direct"
+    SSH_MGMT_LAST_TRANSPORT=""
+    SSH_MGMT_LAST_HOST=""
+    SSH_MGMT_LAST_PORT=""
+    info "Smart Wizard: using profile SSH ${OUT_SSH_USER}@${OUT_SSH_HOST}:${OUT_SSH_PORT}"
+  else
+    OUT_SSH_HOST="$(prompt_host "OUT server host (SSH)" "${OUT_SSH_HOST:-$OUT_PUBLIC_IP}")"
+    OUT_PUBLIC_IP="${OUT_PUBLIC_IP:-$OUT_SSH_HOST}"
+    OUT_PUBLIC_IP="${OUT_SSH_HOST}"
+    OUT_SSH_PORT="$(prompt_port "OUT SSH port" "${OUT_SSH_PORT:-22}")"
+    OUT_SSH_USER="$(prompt_nonempty "OUT SSH user" "${OUT_SSH_USER:-root}")"
 
 echo
 echo -e "${BOLD}${WHT}SSH transport${RST}"
@@ -242,146 +309,248 @@ esac
   ident="${ident//$'\r'/}"
   ident="${ident//$'\n'/}"
   [[ -n "$ident" ]] && OUT_SSH_IDENTITY="$ident"
+  fi
 
   # Preflight (sets REMOTE_SUDO)
   remote_preflight || { pause; return 1; }
 
-  # Port selection (auto-suggest + optional override)
+  # Port selection and reverse-forward
   local suggested
-  suggested="$(suggest_wg_port || true)"
-  [[ -n "$suggested" ]] && WG_PORT="$suggested"
-  while true; do
-    WG_PORT="$(prompt_port "Tunnel public port (looks like TCP)" "${WG_PORT:-443}")"
+  if [[ "$smart" == "1" ]]; then
+    echo
+    echo -e "${BOLD}${WHT}Smart Wizard ports${RST}"
+    hr
+    echo -e "${DIM}This is the only interactive step: public TCP users connect to on IR, and target/service port on OUT.${RST}"
 
-    # Warn if OS sockets appear to use it.
-    local _lp="no" _rp="no"
-    local_port_in_use "${WG_PORT}" && _lp="yes" || true
-    remote_port_in_use "${WG_PORT}" && _rp="yes" || true
-    if [[ "${_lp}" == "yes" || "${_rp}" == "yes" ]]; then
-      warn "Selected WG_PORT=${WG_PORT} appears to be in use (local=${_lp}, remote=${_rp})."
-    fi
-
-    # Hard conflict with other AZHDAR profiles (WG/forward/ssh-fallback).
-    if ! ports_validate_current_or_warn; then
-      local _sug
-      _sug="$(ports_suggest_free_near tcp "${WG_PORT}" || true)"
-      if [[ -n "${_sug:-}" && "${_sug}" != "${WG_PORT}" ]]; then
-        warn "Suggested free port near ${WG_PORT}: ${_sug}"
-        if [[ "$(prompt_yesno "Use suggested port ${_sug}?" "Y")" == "Y" ]]; then
-          WG_PORT="${_sug}"
-          continue
-        fi
-      fi
-      warn "WG_PORT conflicts with another profile. Choose a different port."
-      continue
-    fi
-    break
-  done
-
-
-  # Optional forwarding
-  echo
-  echo -e "${BOLD}${WHT}Optional reverse-forward${RST}"
-  hr
-  echo -e "${DIM}This can forward public IR ports to OUT over the WG tunnel.${RST}"
-  local rf_default="N"
-    [[ -n "${FORWARD_TCP_PORTS:-}${FORWARD_UDP_PORTS:-}" ]] && rf_default="Y"
-    if [[ "$(prompt_yesno "Enable reverse-forward rules on IR?" "$rf_default")" == "Y" ]]; then
-    while true; do
-      read -rp "Public TCP port(s) on IR to forward (comma-separated, empty=none) [${FORWARD_TCP_PORTS}]: " FORWARD_TCP_PORTS || true
-      FORWARD_TCP_PORTS="${FORWARD_TCP_PORTS:-}"
-      protect_ir_ssh_port || true
-      read -rp "Public UDP port(s) on IR to forward (comma-separated, empty=none) [${FORWARD_UDP_PORTS}]: " FORWARD_UDP_PORTS || true
-      FORWARD_UDP_PORTS="${FORWARD_UDP_PORTS:-}"
-      VLESS_DST_PORT="$(prompt_port "Destination port on OUT (service bind port)" "${VLESS_DST_PORT:-2086}")"
-
-      if ports_validate_current_or_warn; then
-        break
-      fi
-
-      warn "Forward ports conflict with another profile. Please re-enter."
-    done
-  else
+    # Smart mode is going to ask for fresh forward ports, so stale saved
+    # FORWARD_TCP_PORTS must not push the tunnel suggestion away. Reserve the
+    # tunnel port first, then suggest a DIFFERENT public TCP forward port.
+    local _saved_forward_tcp="${FORWARD_TCP_PORTS:-}" _saved_forward_udp="${FORWARD_UDP_PORTS:-}"
     FORWARD_TCP_PORTS=""
     FORWARD_UDP_PORTS=""
+
+    local _wg_ok="0" _wg_base="${WG_PORT:-443}"
+    ports_build_registry
+    if [[ "${WG_PORT:-}" =~ ^[0-9]{1,5}$ ]] && ports_wg_port_candidate_ok "${WG_PORT}" && ! local_port_in_use "${WG_PORT}"; then
+      if ssh_check_quiet; then
+        remote_port_in_use "${WG_PORT}" || _wg_ok="1"
+      else
+        _wg_ok="1"
+      fi
+    fi
+    if [[ "$_wg_ok" != "1" ]]; then
+      suggested="$(suggest_wg_port || true)"
+      [[ -z "$suggested" ]] && suggested="$(ports_suggest_wg_free_near "${_wg_base}" || true)"
+      if [[ -n "$suggested" ]]; then
+        WG_PORT="$suggested"
+      fi
+    fi
+    if [[ -z "${WG_PORT:-}" ]]; then
+      err "Smart Wizard could not find a usable WireGuard/Mimic tunnel port."
+      pause
+      return 1
+    fi
+
+    local smart_default_tcp="${_saved_forward_tcp%%,*}"
+    if [[ -z "$smart_default_tcp" || "$smart_default_tcp" == "${WG_PORT}" ]]; then
+      if [[ "${WG_PORT}" == "443" ]]; then
+        smart_default_tcp="8443"
+      else
+        smart_default_tcp="443"
+      fi
+    fi
+    smart_default_tcp="$(ports_suggest_forward_tcp_free_preferred "$smart_default_tcp" || true)"
+    [[ -n "$smart_default_tcp" ]] || smart_default_tcp="$(ports_suggest_forward_tcp_free_near "8443" || true)"
+    if [[ -z "$smart_default_tcp" ]]; then
+      err "Smart Wizard could not find a usable public TCP forward port."
+      pause
+      return 1
+    fi
+
+    info "Smart Wizard reserved tunnel port: WG_PORT=${WG_PORT}. Do not use this as the public TCP user port."
+    info "Suggested public TCP user port: ${smart_default_tcp} (checked free on IR and not reserved by AZHDAR)."
+    local smart_public_tcp=""
+    smart_public_tcp="$(prompt_port "Public TCP port users connect to on IR" "$smart_default_tcp")"
+    VLESS_DST_PORT="$(prompt_port "Target port on OUT (service bind port)" "${VLESS_DST_PORT:-2086}")"
+    FORWARD_TCP_PORTS="$smart_public_tcp"
+    FORWARD_UDP_PORTS=""
+
+    ports_auto_fix_forward_tcp_ports || true
+    if [[ -z "${FORWARD_TCP_PORTS:-}" ]]; then
+      err "Smart Wizard could not find a usable public TCP forward port."
+      pause
+      return 1
+    fi
+    if ! ports_validate_current_or_warn; then
+      err "Smart Wizard could not automatically resolve all port conflicts."
+      pause
+      return 1
+    fi
+    info "Smart Wizard final ports: tunnel WG_PORT=${WG_PORT}; public TCP=${FORWARD_TCP_PORTS}; OUT target=${VLESS_DST_PORT}"
+  else
+    # Port selection (auto-suggest + optional override)
+    suggested="$(suggest_wg_port || true)"
+    [[ -n "$suggested" ]] && WG_PORT="$suggested"
+    while true; do
+      WG_PORT="$(prompt_port "Tunnel public port (looks like TCP)" "${WG_PORT:-443}")"
+
+      # Warn if OS sockets appear to use it.
+      local _lp="no" _rp="no"
+      local_port_in_use "${WG_PORT}" && _lp="yes" || true
+      remote_port_in_use "${WG_PORT}" && _rp="yes" || true
+      if [[ "${_lp}" == "yes" || "${_rp}" == "yes" ]]; then
+        warn "Selected WG_PORT=${WG_PORT} appears to be in use (local=${_lp}, remote=${_rp})."
+      fi
+
+      # Hard conflict with other AZHDAR profiles (WG/forward/ssh-fallback).
+      if ! ports_validate_current_or_warn; then
+        local _sug
+        _sug="$(ports_suggest_wg_free_near "${WG_PORT}" || true)"
+        if [[ -n "${_sug:-}" && "${_sug}" != "${WG_PORT}" ]]; then
+          warn "Suggested free port near ${WG_PORT}: ${_sug}"
+          if [[ "$(prompt_yesno "Use suggested port ${_sug}?" "Y")" == "Y" ]]; then
+            WG_PORT="${_sug}"
+            continue
+          fi
+        fi
+        warn "Selected tunnel/forward port conflicts with another profile. Check the warning above and choose a different port."
+        continue
+      fi
+      break
+    done
+
+
+    # Optional forwarding
+    echo
+    echo -e "${BOLD}${WHT}Optional reverse-forward${RST}"
+    hr
+    echo -e "${DIM}This can forward public IR ports to OUT over the WG tunnel.${RST}"
+    local rf_default="Y"
+    if [[ "$(prompt_yesno "Enable reverse-forward rules on IR?" "$rf_default")" == "Y" ]]; then
+      while true; do
+        local _fwd_default="${FORWARD_TCP_PORTS%%,*}" _fwd_answer=""
+        if [[ -z "$_fwd_default" || "$_fwd_default" == "${WG_PORT:-}" ]]; then
+          if [[ "${WG_PORT:-}" == "443" ]]; then
+            _fwd_default="8443"
+          else
+            _fwd_default="443"
+          fi
+        fi
+        _fwd_default="$(ports_suggest_forward_tcp_free_preferred "$_fwd_default" || true)"
+        [[ -n "$_fwd_default" ]] || _fwd_default="$(ports_suggest_forward_tcp_free_near "8443" || true)"
+        if [[ -n "${WG_PORT:-}" && -n "$_fwd_default" ]]; then
+          info "Tunnel public port is WG_PORT=${WG_PORT}. The user-facing TCP forward port must be different; suggested free TCP port: ${_fwd_default}."
+        fi
+        read -rp "Public TCP port(s) on IR to forward (comma-separated) [${_fwd_default}]: " _fwd_answer || true
+        FORWARD_TCP_PORTS="${_fwd_answer:-${_fwd_default}}"
+        ports_auto_fix_forward_tcp_ports || true
+        read -rp "Public UDP port(s) on IR to forward (comma-separated, empty=none) [${FORWARD_UDP_PORTS}]: " FORWARD_UDP_PORTS || true
+        FORWARD_UDP_PORTS="${FORWARD_UDP_PORTS:-}"
+        VLESS_DST_PORT="$(prompt_port "Destination port on OUT (service bind port)" "${VLESS_DST_PORT:-2086}")"
+
+        if ports_validate_current_or_warn; then
+          break
+        fi
+
+        warn "One of the forward ports conflicts with the tunnel port or another profile. Please re-enter only the forwarding ports, or answer N to disable forwarding."
+      done
+    else
+      FORWARD_TCP_PORTS=""
+      FORWARD_UDP_PORTS=""
+    fi
   fi
 
   # Tunnel params
-  echo
-  echo -e "${BOLD}${WHT}Tunnel parameters${RST}"
-  hr
-  echo -e "${DIM}MTU mode:${RST}"
-  echo " 1) Auto (discover best common MTU)"
-  echo " 2) Manual"
-  local _mtu_mode_def="1"
-  [[ "${MTU_MODE:-manual}" == "manual" ]] && _mtu_mode_def="2" || true
-  local _mtu_mode=""
-  while true; do
-    read -rp "Select [${_mtu_mode_def}]: " _mtu_mode || true
-    _mtu_mode="${_mtu_mode:-${_mtu_mode_def}}"
-    case "${_mtu_mode}" in
-      1) MTU_MODE="auto"; break ;;
-      2) MTU_MODE="manual"; break ;;
-      *) warn "Invalid choice." ;;
-    esac
-  done
-  if [[ "${MTU_MODE}" == "manual" ]]; then
-    MTU="$(prompt_mtu "MTU" "${MTU:-1272}")"
-  else
-    # Start with a safe baseline; auto-discovery will refine after the tunnel comes up.
+  if [[ "$smart" == "1" ]]; then
+    echo
+    echo -e "${BOLD}${WHT}Smart defaults${RST}"
+    hr
+    MTU_MODE="auto"
     MTU="${MTU:-1272}"
+    KEEPALIVE="${KEEPALIVE:-25}"
+    ENABLE_TUN_IPV4="1"
+    ENABLE_TUN_IPV6="0"
+    TUN_IP_ASSIGN="auto"
+    USE_PSK="1"
+    ensure_psk
+    info "Smart Wizard defaults: IPv4 tunnel, auto IP allocation, auto MTU baseline=${MTU}, keepalive=${KEEPALIVE}, PSK=on."
+  else
+    echo
+    echo -e "${BOLD}${WHT}Tunnel parameters${RST}"
+    hr
+    echo -e "${DIM}MTU mode:${RST}"
+    echo " 1) Auto (discover best common MTU)"
+    echo " 2) Manual"
+    local _mtu_mode_def="1"
+    [[ "${MTU_MODE:-manual}" == "manual" ]] && _mtu_mode_def="2" || true
+    local _mtu_mode=""
+    while true; do
+      read -rp "Select [${_mtu_mode_def}]: " _mtu_mode || true
+      _mtu_mode="${_mtu_mode:-${_mtu_mode_def}}"
+      case "${_mtu_mode}" in
+        1) MTU_MODE="auto"; break ;;
+        2) MTU_MODE="manual"; break ;;
+        *) warn "Invalid choice." ;;
+      esac
+    done
+    if [[ "${MTU_MODE}" == "manual" ]]; then
+      MTU="$(prompt_mtu "MTU" "${MTU:-1272}")"
+    else
+      # Start with a safe baseline; auto-discovery will refine after the tunnel comes up.
+      MTU="${MTU:-1272}"
+    fi
+    KEEPALIVE="$(prompt_keepalive "PersistentKeepalive" "${KEEPALIVE:-25}")"
+
+
+    echo -e "${DIM}Tunnel IP mode:${RST}"
+    echo " 1) IPv4 only"
+    echo " 2) IPv6 only"
+    echo " 3) IPv4 + IPv6 (dual stack)"
+    local _def_mode="1"
+    if [[ "${ENABLE_TUN_IPV4:-1}" == "1" && "${ENABLE_TUN_IPV6:-0}" != "1" ]]; then _def_mode="1"; fi
+    if [[ "${ENABLE_TUN_IPV4:-1}" != "1" && "${ENABLE_TUN_IPV6:-0}" == "1" ]]; then _def_mode="2"; fi
+    local _mode=""
+    while true; do
+      read -rp "Select [${_def_mode}]: " _mode || true
+      _mode="${_mode:-${_def_mode}}"
+      case "${_mode}" in
+        1) ENABLE_TUN_IPV4="1"; ENABLE_TUN_IPV6="0"; break ;;
+        2) ENABLE_TUN_IPV4="0"; ENABLE_TUN_IPV6="1"; break ;;
+        3) ENABLE_TUN_IPV4="1"; ENABLE_TUN_IPV6="1"; break ;;
+        *) warn "Invalid choice." ;;
+      esac
+    done
+
+    if [[ "${ENABLE_TUN_IPV4}" != "1" && -n "${FORWARD_TCP_PORTS:-}${FORWARD_UDP_PORTS:-}" ]]; then
+      warn "Reverse-forward requires an IPv4 tunnel address. Disabling forwarding settings for this profile."
+      FORWARD_TCP_PORTS=""
+      FORWARD_UDP_PORTS=""
+    fi
+
+
+
+    echo
+    echo -e "${DIM}Tunnel IP allocation:${RST}"
+    echo " 1) Auto (pick subnet + WG IPs)"
+    echo " 2) Manual (set subnet + WG IPs)"
+    local _def_ipassign="1"
+    [[ "${TUN_IP_ASSIGN:-auto}" == "manual" ]] && _def_ipassign="2" || true
+    local _ia=""
+    while true; do
+      read -rp "Select [${_def_ipassign}]: " _ia || true
+      _ia="${_ia:-${_def_ipassign}}"
+      case "${_ia}" in
+        1) TUN_IP_ASSIGN="auto"; break ;;
+        2) TUN_IP_ASSIGN="manual"; break ;;
+        *) warn "Invalid choice." ;;
+      esac
+    done
+
+    local psk_ans
+    psk_ans="$(prompt_yesno "Use PSK for WireGuard?" "Y")"
+    [[ "$psk_ans" == "Y" ]] && USE_PSK="1" || USE_PSK="0"
+    ensure_psk
   fi
-  KEEPALIVE="$(prompt_keepalive "PersistentKeepalive" "${KEEPALIVE:-25}")"
-
-
-  echo -e "${DIM}Tunnel IP mode:${RST}"
-  echo " 1) IPv4 only"
-  echo " 2) IPv6 only"
-  echo " 3) IPv4 + IPv6 (dual stack)"
-  local _def_mode="1"
-  if [[ "${ENABLE_TUN_IPV4:-1}" == "1" && "${ENABLE_TUN_IPV6:-0}" != "1" ]]; then _def_mode="1"; fi
-  if [[ "${ENABLE_TUN_IPV4:-1}" != "1" && "${ENABLE_TUN_IPV6:-0}" == "1" ]]; then _def_mode="2"; fi
-  local _mode=""
-  while true; do
-    read -rp "Select [${_def_mode}]: " _mode || true
-    _mode="${_mode:-${_def_mode}}"
-    case "${_mode}" in
-      1) ENABLE_TUN_IPV4="1"; ENABLE_TUN_IPV6="0"; break ;;
-      2) ENABLE_TUN_IPV4="0"; ENABLE_TUN_IPV6="1"; break ;;
-      3) ENABLE_TUN_IPV4="1"; ENABLE_TUN_IPV6="1"; break ;;
-      *) warn "Invalid choice." ;;
-    esac
-  done
-
-  if [[ "${ENABLE_TUN_IPV4}" != "1" && -n "${FORWARD_TCP_PORTS:-}${FORWARD_UDP_PORTS:-}" ]]; then
-    warn "Reverse-forward requires an IPv4 tunnel address. Disabling forwarding settings for this profile."
-    FORWARD_TCP_PORTS=""
-    FORWARD_UDP_PORTS=""
-  fi
-
-
-
-  echo
-  echo -e "${DIM}Tunnel IP allocation:${RST}"
-  echo " 1) Auto (pick subnet + WG IPs)"
-  echo " 2) Manual (set subnet + WG IPs)"
-  local _def_ipassign="1"
-  [[ "${TUN_IP_ASSIGN:-auto}" == "manual" ]] && _def_ipassign="2" || true
-  local _ia=""
-  while true; do
-    read -rp "Select [${_def_ipassign}]: " _ia || true
-    _ia="${_ia:-${_def_ipassign}}"
-    case "${_ia}" in
-      1) TUN_IP_ASSIGN="auto"; break ;;
-      2) TUN_IP_ASSIGN="manual"; break ;;
-      *) warn "Invalid choice." ;;
-    esac
-  done
-
-  local psk_ans
-  psk_ans="$(prompt_yesno "Use PSK for WireGuard?" "Y")"
-  [[ "$psk_ans" == "Y" ]] && USE_PSK="1" || USE_PSK="0"
-  ensure_psk
 
   profile_save
 
@@ -420,11 +589,21 @@ fi
   auto_detect_local_ips
   profile_save
 
-  # If still missing, ask interactively (Mimic needs correct filter IPs).
+  # If still missing, ask interactively in normal mode. Smart Wizard stays one-step and fails with a clear message.
   if [[ -z "${IR_LOCAL_IP:-}" ]]; then
+    if [[ "$smart" == "1" ]]; then
+      err "Smart Wizard could not auto-detect IR local/source IP for Mimic. Run normal wizard once or set IR_LOCAL_IP in the profile."
+      pause
+      return 1
+    fi
     IR_LOCAL_IP="$(prompt_ipv4 "IR local/source IP used to reach OUT (Mimic filter)" "")"
   fi
   if [[ -z "${OUT_LOCAL_IP:-}" ]]; then
+    if [[ "$smart" == "1" ]]; then
+      err "Smart Wizard could not auto-detect OUT local/source IP for Mimic. Run normal wizard once or set OUT_LOCAL_IP in the profile."
+      pause
+      return 1
+    fi
     OUT_LOCAL_IP="$(prompt_ipv4 "OUT local/source IP used to reach IR (Mimic filter)" "")"
   fi
 
@@ -550,6 +729,7 @@ fi
   hr
   sleep 4
   if connection_indicator; then
+    wizard_print_final_summary
     ok "Install/repair complete."
 
     if [[ "${MTU_MODE:-manual}" == "auto" ]]; then
@@ -559,9 +739,15 @@ fi
       hr
       mtu_autofind_and_apply || warn "Auto MTU failed; keeping MTU=${MTU}."
       echo
-      connection_indicator || warn "After MTU apply, AZHDAR is still DISCONNECTED."
+      if connection_indicator; then
+        wizard_print_final_summary
+      else
+        wizard_print_final_summary
+        warn "After MTU apply, AZHDAR is still DISCONNECTED."
+      fi
     fi
   else
+    wizard_print_final_summary
     err "Install finished but AZHDAR is DISCONNECTED."
 
     if [[ "${TUN_IP_ASSIGN:-auto}" == "auto" ]]; then
@@ -573,6 +759,7 @@ fi
           mtu_autofind_and_apply || true
         fi
         ok "Wizard completed."
+        wizard_print_final_summary
         pause
         return 0
       fi
@@ -591,6 +778,7 @@ fi
       sleep 6
       if connection_indicator; then
         ok "Recovered after restart retry."
+        wizard_print_final_summary
         pause
         return 0
       fi
@@ -636,3 +824,15 @@ return 1
   return 0
 }
 
+install_smart_wizard(){
+  local _old_smart="${AZHDAR_SMART_WIZARD:-}" rc=0
+  AZHDAR_SMART_WIZARD="1"
+  install_wizard
+  rc=$?
+  if [[ -n "$_old_smart" ]]; then
+    AZHDAR_SMART_WIZARD="$_old_smart"
+  else
+    unset AZHDAR_SMART_WIZARD 2>/dev/null || true
+  fi
+  return "$rc"
+}

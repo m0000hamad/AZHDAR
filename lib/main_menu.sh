@@ -127,17 +127,18 @@ main_menu(){
     echo " 1) Set IR SSH exempt port (default 22)"
     echo " 2) Manage profiles (select/add/delete)"
     echo " 3) Install / Update / Repair (wizard)"
-    echo " 4) Offline install (no SSH) - build remote bundle"
-    echo " 5) Status indicator"
-    echo " 6) Diagnostics (summary)"
-    echo " 7) Services (start/stop/restart)"
-    echo " 8) Forwarding (DNAT)"
-    echo " 9) Advanced settings"
-    echo "10) Cleanup / Uninstall"
-    echo "11) SSH fallback (reverse tunnel)"
-    echo "12) Update AZHDAR"
-    echo "13) Repair tunnel / auto watchdog"
-    echo "14) Emergency IR recovery (no rebuild)"
+    echo " 4) Smart Wizard / one-step install (asks only ports)"
+    echo " 5) Offline install (no SSH) - build remote bundle"
+    echo " 6) Status indicator"
+    echo " 7) Diagnostics (summary)"
+    echo " 8) Services (start/stop/restart)"
+    echo " 9) Forwarding (DNAT)"
+    echo "10) Advanced settings"
+    echo "11) Cleanup / Uninstall"
+    echo "12) SSH fallback (reverse tunnel)"
+    echo "13) Update AZHDAR"
+    echo "14) Repair tunnel / auto watchdog"
+    echo "15) Emergency IR recovery (no rebuild)"
     echo " 0) Exit"
     hr
 
@@ -157,45 +158,49 @@ main_menu(){
         ;;
       4)
         ensure_profile_selected || { pause; continue; }
-        offline_bundle_wizard || true
+        install_smart_wizard || true
         ;;
       5)
         ensure_profile_selected || { pause; continue; }
-        banner; connection_indicator || true; pause
+        offline_bundle_wizard || true
         ;;
       6)
         ensure_profile_selected || { pause; continue; }
-        diagnostics_full || true
+        banner; connection_indicator || true; pause
         ;;
       7)
         ensure_profile_selected || { pause; continue; }
-        menu_services || true
+        diagnostics_full || true
         ;;
       8)
         ensure_profile_selected || { pause; continue; }
-        menu_forwarding || true
+        menu_services || true
         ;;
       9)
         ensure_profile_selected || { pause; continue; }
-        menu_advanced || true
+        menu_forwarding || true
         ;;
       10)
         ensure_profile_selected || { pause; continue; }
-        menu_cleanup || true
+        menu_advanced || true
         ;;
       11)
         ensure_profile_selected || { pause; continue; }
-        menu_ssh_fallback || true
+        menu_cleanup || true
         ;;
       12)
+        ensure_profile_selected || { pause; continue; }
+        menu_ssh_fallback || true
+        ;;
+      13)
         azhdar_update_menu || true
         pause
         ;;
-      13)
+      14)
         ensure_profile_selected || { pause; continue; }
         menu_tunnel_repair || true
         ;;
-      14)
+      15)
         azhdar_recover_ir_runtime || true
         pause
         ;;

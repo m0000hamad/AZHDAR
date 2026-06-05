@@ -501,7 +501,7 @@ offline_bundle_wizard(){
           continue
         fi
       fi
-      warn "WG_PORT conflicts with another profile. Choose a different port."
+      warn "Selected tunnel/forward port conflicts with another profile. Check the warning above and choose a different port."
       continue
     fi
 
@@ -524,7 +524,7 @@ offline_bundle_wizard(){
       VLESS_DST_PORT="$(prompt_port "Destination port on OUT (service bind port)" "${VLESS_DST_PORT:-2086}")"
 
       ports_validate_current_or_warn && break
-      warn "Forward ports conflict with another profile. Please re-enter."
+      warn "One of the forward ports conflicts with another profile. Please re-enter only the forwarding ports, or leave them empty to disable forwarding."
     done
   else
     FORWARD_TCP_PORTS=""

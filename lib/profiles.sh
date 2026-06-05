@@ -90,7 +90,7 @@ MTU_MODE="manual"
 MTU="1272"
 KEEPALIVE="25"
 
-FORWARD_TCP_PORTS="443"
+FORWARD_TCP_PORTS=""
 FORWARD_UDP_PORTS=""
 FORWARD_DST_IP=""   # default: OUT_WG_IP
 VLESS_DST_PORT="2086"
@@ -146,9 +146,12 @@ defaults_profile(){
   MTU_MODE="${MTU_MODE:-manual}"
   MTU="${MTU:-1272}"
   KEEPALIVE="${KEEPALIVE:-25}"
-  FORWARD_TCP_PORTS="${FORWARD_TCP_PORTS:-443}"
-  FORWARD_UDP_PORTS="${FORWARD_UDP_PORTS:-}"
-  FORWARD_DST_IP="${FORWARD_DST_IP:-}"
+  # Preserve an explicitly empty forwarding list. Empty means reverse-forward is disabled.
+  # Older builds accidentally turned empty FORWARD_TCP_PORTS back into 443 on load,
+  # which made adding a second profile fail with a misleading port-conflict warning.
+  FORWARD_TCP_PORTS="${FORWARD_TCP_PORTS-}"
+  FORWARD_UDP_PORTS="${FORWARD_UDP_PORTS-}"
+  FORWARD_DST_IP="${FORWARD_DST_IP-}"
   VLESS_DST_PORT="${VLESS_DST_PORT:-2086}"
   SSH_FALLBACK_ENABLED="${SSH_FALLBACK_ENABLED:-0}"
   SSH_FALLBACK_AUTOSTART="${SSH_FALLBACK_AUTOSTART:-1}"
@@ -216,7 +219,7 @@ profile_load(){
   MTU_MODE="manual"
   MTU="1272"
   KEEPALIVE="25"
-  FORWARD_TCP_PORTS="443"
+  FORWARD_TCP_PORTS=""
   FORWARD_UDP_PORTS=""
   FORWARD_DST_IP=""
   VLESS_DST_PORT="2086"
