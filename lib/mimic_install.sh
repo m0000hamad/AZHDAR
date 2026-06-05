@@ -195,11 +195,8 @@ mimic_supported_codename(){
 install_mimic_local(){
   step "Install Mimic on IR (local)"
   if have_cmd mimic; then
-    if modprobe mimic >/dev/null 2>&1 || lsmod 2>/dev/null | awk '{print $1}' | grep -qx mimic; then
-      ok "Mimic already installed (local)."
-      return 0
-    fi
-    warn "Mimic CLI is installed locally, but kernel module is not loaded; repairing DKMS/package."
+    ok "Mimic already installed (local)."
+    return 0
   fi
   if ! have_cmd apt-get; then
     die "Mimic installer currently supports Debian/Ubuntu (apt) only on this host."
@@ -289,32 +286,19 @@ fi
     fi
   fi
 
-  dkms autoinstall >/dev/null 2>&1 || true
-  depmod -a >/dev/null 2>&1 || true
-
   if ! have_cmd mimic; then
     err "Mimic install failed on local host."
     dpkg -l | grep -i mimic || true
     die "Mimic install failed. If DKMS failed, ensure compatible kernel + headers are available."
-  fi
-  if ! (modprobe mimic >/dev/null 2>&1 || lsmod 2>/dev/null | awk '{print $1}' | grep -qx mimic); then
-    err "Mimic installed but kernel module could not be loaded on local host."
-    dkms status 2>/dev/null | grep -i mimic || true
-    tail -n 80 /var/lib/dkms/mimic/*/build/make.log 2>/dev/null || true
-    die "Mimic kernel module load failed. Install matching kernel headers or check DKMS build log."
   fi
   ok "Mimic installed (local)."
 }
 
 install_mimic_remote(){
   step "Install Mimic on OUT (remote)"
-  local remote_mimic_state=""
-  remote_mimic_state="$(ssh_run_root_best_effort "if command -v mimic >/dev/null 2>&1; then if modprobe mimic >/dev/null 2>&1 || lsmod 2>/dev/null | sed 's/[[:space:]].*//' | grep -qx mimic; then echo ready; else echo cli-no-module; fi; else echo missing; fi" 2>/dev/null | tr -d '\r' | tail -n1 || true)"
-  if [[ "$remote_mimic_state" == "ready" ]]; then
+  if ssh_run "command -v mimic >/dev/null 2>&1 && echo yes || echo no" | tail -n1 | grep -qx yes; then
     ok "Mimic already installed (remote)."
     return 0
-  elif [[ "$remote_mimic_state" == "cli-no-module" ]]; then
-    warn "Mimic CLI is installed remotely, but kernel module is not loaded; repairing DKMS/package."
   fi
 
   # Detect remote codename + arch (best-effort)
@@ -449,16 +433,8 @@ if ! dpkg-deb -I "$tmp/mimic-dkms.deb" >/dev/null 2>&1; then
 fi
 chmod 644 "$tmp"/mimic*.deb 2>/dev/null || true
 aptq install -y "$tmp/mimic.deb" "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || { echo "APT_INSTALL_FAILED"; exit 7; }
-dkms autoinstall >/dev/null 2>&1 || true
-depmod -a >/dev/null 2>&1 || true
 
 command -v mimic >/dev/null 2>&1 || { echo "MIMIC_INSTALL_FAILED"; exit 7; }
-if ! (modprobe mimic >/dev/null 2>&1 || lsmod 2>/dev/null | awk '{print $1}' | grep -qx mimic); then
-  echo "MIMIC_MODULE_LOAD_FAILED"
-  dkms status 2>/dev/null | grep -i mimic || true
-  tail -n 80 /var/lib/dkms/mimic/*/build/make.log 2>/dev/null || true
-  exit 7
-fi
 REMOTE
 
   ok "Mimic installed (remote)."

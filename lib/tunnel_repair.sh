@@ -229,9 +229,16 @@ azhdar_repair_tunnel_limited(){
     rc=124
   fi
   if [[ -s "$log" ]]; then
-    tail -n 60 "$log" 2>/dev/null || true
+    if [[ "$rc" == "0" ]]; then
+      ok "Safe repair pass completed."
+    else
+      warn "Safe repair pass finished with issues. Full output saved: $log"
+      grep -E "(✗|!|ERROR|FAILED|failed|Fatal|RESULT:)" "$log" 2>/dev/null | tail -n 12 || true
+    fi
   fi
-  rm -f "$log" 2>/dev/null || true
+  if [[ "$rc" == "0" ]]; then
+    rm -f "$log" 2>/dev/null || true
+  fi
   return "$rc"
 }
 

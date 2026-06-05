@@ -66,7 +66,7 @@ menu_services(){
     echo " 1) Start services"
     echo " 2) Stop services"
     echo " 3) Restart services"
-    echo " 4) Status (systemctl)"
+    echo " 4) Status summary"
     echo " 0) Back"
     hr
     read -rp "Select: " c || true
@@ -76,9 +76,8 @@ menu_services(){
       3) restart_services_remote || true; restart_services_local || true; pause ;;
       4)
         local wan; wan="$(detect_wan_if)"
-        systemctl status "mimic@${wan}" --no-pager -l 2>/dev/null || true
-        echo
-        systemctl status "$(svc_wg)" --no-pager -l 2>/dev/null || true
+        azhdar_unit_brief_local "Local WG" "$(svc_wg)"
+        azhdar_unit_brief_local "Local Mimic" "mimic@${wan}"
         pause
         ;;
       0) return 0 ;;
@@ -130,7 +129,7 @@ main_menu(){
     echo " 3) Install / Update / Repair (wizard)"
     echo " 4) Offline install (no SSH) - build remote bundle"
     echo " 5) Status indicator"
-    echo " 6) Diagnostics (full)"
+    echo " 6) Diagnostics (summary)"
     echo " 7) Services (start/stop/restart)"
     echo " 8) Forwarding (DNAT)"
     echo " 9) Advanced settings"

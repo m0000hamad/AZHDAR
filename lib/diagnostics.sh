@@ -101,18 +101,12 @@ connection_indicator(){
   step "AZHDAR indicator"
 
   local wgsvc; wgsvc="$(svc_wg)"
-  local wan; wan="$(mimic_detect_local_if 2>/dev/null || detect_wan_if 2>/dev/null || true)"
+  local wan; wan="$(detect_wan_if)"
   local mimicsvc="mimic@${wan}"
 
   local wg_svc_active=0 wg_active=0 mimic_active=0
   systemctl is-active --quiet "$wgsvc" 2>/dev/null && wg_svc_active=1 || true
-  if [[ "${WG_MODE:-classic}" == "account" ]]; then
-    mimic_active=1
-  elif declare -F mimic_local_active_quiet >/dev/null 2>&1; then
-    mimic_local_active_quiet "$wan" && mimic_active=1 || true
-  elif [[ -n "$wan" ]]; then
-    systemctl is-active --quiet "$mimicsvc" 2>/dev/null && mimic_active=1 || true
-  fi
+  systemctl is-active --quiet "$mimicsvc" 2>/dev/null && mimic_active=1 || true
 
   # Local SSH fallback state (if enabled)
   local sshfb_active=0
@@ -286,9 +280,45 @@ return 1
 }
 
 
-diagnostics_full(){
+
+azhdar_unit_brief_local(){
+  local label="$1" unit="$2"
+  local state enabled result main_status
+  state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  enabled="$(systemctl is-enabled "$unit" 2>/dev/null || true)"
+  result="$(systemctl show -p Result --value "$unit" 2>/dev/null || true)"
+  main_status="$(systemctl show -p ExecMainStatus --value "$unit" 2>/dev/null || true)"
+  [[ -n "$enabled" ]] || enabled="unknown"
+  if [[ "$state" == "active" ]]; then
+    ok "${label}: active (${unit}, enabled=${enabled})"
+  elif [[ "$state" == "inactive" || "$state" == "failed" || "$state" == "activating" || "$state" == "deactivating" ]]; then
+    err "${label}: ${state} (${unit}, enabled=${enabled}, result=${result:-unknown}, code=${main_status:-0})"
+  else
+    warn "${label}: ${state:-unknown} (${unit}, enabled=${enabled})"
+  fi
+}
+
+azhdar_unit_brief_remote(){
+  local label="$1" unit="$2"
+  local out state enabled result main_status
+  out="$(ssh_run "u='${unit}'; printf 'state='; systemctl is-active \"\$u\" 2>/dev/null || true; printf '\nenabled='; systemctl is-enabled \"\$u\" 2>/dev/null || true; printf '\nresult='; systemctl show -p Result --value \"\$u\" 2>/dev/null || true; printf '\ncode='; systemctl show -p ExecMainStatus --value \"\$u\" 2>/dev/null || true" 2>/dev/null || true)"
+  state="$(printf '%s\n' "$out" | awk -F= '/^state=/{print $2; exit}')"
+  enabled="$(printf '%s\n' "$out" | awk -F= '/^enabled=/{print $2; exit}')"
+  result="$(printf '%s\n' "$out" | awk -F= '/^result=/{print $2; exit}')"
+  main_status="$(printf '%s\n' "$out" | awk -F= '/^code=/{print $2; exit}')"
+  [[ -n "$enabled" ]] || enabled="unknown"
+  if [[ "$state" == "active" ]]; then
+    ok "${label}: active (${unit}, enabled=${enabled})"
+  elif [[ -n "$state" ]]; then
+    err "${label}: ${state} (${unit}, enabled=${enabled}, result=${result:-unknown}, code=${main_status:-0})"
+  else
+    warn "${label}: status unavailable (${unit})"
+  fi
+}
+
+diagnostics_full_verbose(){
   banner
-  echo -e "${BOLD}${WHT}Diagnostics (profile: ${PROFILE})${RST}"
+  echo -e "${BOLD}${WHT}Diagnostics (verbose, profile: ${PROFILE})${RST}"
   hr
   echo -e "${DIM}Local:${RST}"
   echo "  WG_IF=${WG_IF}  WG_PORT=${WG_PORT}  OUT=${OUT_PUBLIC_IP}"
@@ -330,3 +360,47 @@ diagnostics_full(){
   pause
 }
 
+diagnostics_full(){
+  if [[ "${AZHDAR_VERBOSE_DIAG:-0}" == "1" ]]; then
+    diagnostics_full_verbose
+    return $?
+  fi
+
+  banner
+  echo -e "${BOLD}${WHT}Diagnostics summary (profile: ${PROFILE})${RST}"
+  hr
+  echo -e "${DIM}Only final states are shown here. Full journal/systemctl logs are hidden by default.${RST}"
+  echo
+
+  connection_indicator || true
+  echo
+  hr
+  echo -e "${BOLD}${WHT}Service summary${RST}"
+  local wan; wan="$(detect_wan_if)"
+  azhdar_unit_brief_local "Local WG" "$(svc_wg)"
+  azhdar_unit_brief_local "Local Mimic" "mimic@${wan}"
+
+  if command -v modprobe >/dev/null 2>&1; then
+    if modprobe -n mimic >/dev/null 2>&1 || lsmod | grep -q '^mimic\b'; then
+      ok "Mimic kernel module: available"
+    else
+      err "Mimic kernel module: not available/loadable"
+    fi
+  fi
+
+  if ssh_check_quiet; then
+    local rw="${REMOTE_WAN_IF:-}"
+    [[ -z "$rw" ]] && rw="$(remote_detect_wan_if_quiet 2>/dev/null || true)"
+    azhdar_unit_brief_remote "Remote WG" "wg-quick@${WG_IF}"
+    [[ -n "$rw" ]] && azhdar_unit_brief_remote "Remote Mimic" "mimic@${rw}" || warn "Remote Mimic: WAN interface unknown"
+  else
+    warn "Remote service summary skipped (SSH unavailable)."
+  fi
+
+  echo
+  echo -e "${DIM}Log files are still saved for support:${RST}"
+  echo -e "  ${LOG_FILE}"
+  echo -e "  $(_tunnel_repair_log 2>/dev/null || echo "${BASE_DIR}/repair-${PROFILE:-unknown}.log")"
+  echo -e "${DIM}For full systemctl/journal output run:${RST} AZHDAR_VERBOSE_DIAG=1 azhdar"
+  pause
+}

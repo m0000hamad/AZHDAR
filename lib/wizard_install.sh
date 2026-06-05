@@ -441,14 +441,14 @@ fi
   profile_save
 
   # Install Mimic both sides
-  if azhdar_try install_mimic_local; then
+  if ( install_mimic_local ); then
     ok "RESULT: IR/local Mimic install/check succeeded."
   else
     err "RESULT: IR/local Mimic install/check FAILED. Install stopped before changing services."
     pause
     return 1
   fi
-  if azhdar_try install_mimic_remote; then
+  if ( install_mimic_remote ); then
     ok "RESULT: OUT/remote Mimic install/check succeeded."
   else
     err "RESULT: OUT/remote Mimic install/check FAILED. Install stopped before changing services."
@@ -492,7 +492,7 @@ fi
   setup_rst_drop_local && ok "RESULT: IR/local RST-drop rule applied." || warn "RESULT: IR/local RST-drop rule NOT confirmed."
 
   # Write configs
-  if azhdar_try write_mimic_conf_remote; then
+  if ( write_mimic_conf_remote ); then
     REMOTE_WAN_IF="$(remote_detect_wan_if_quiet 2>/dev/null || true)"
     ok "RESULT: OUT/remote Mimic config written."
   else
@@ -507,7 +507,7 @@ fi
     pause
     return 1
   fi
-  if azhdar_try write_mimic_conf_local; then
+  if ( write_mimic_conf_local ); then
     ok "RESULT: IR/local Mimic config written."
   else
     err "RESULT: IR/local Mimic config FAILED. Install stopped before service restart."
@@ -596,7 +596,7 @@ fi
       fi
     done
 
-warn "Opening Diagnostics..."
+warn "Showing final summary (full logs are hidden by default)."
 pause
 diagnostics_full || true
 
