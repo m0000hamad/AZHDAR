@@ -217,7 +217,8 @@ mimic_supported_codename(){
 install_mimic_local(){
   step "Install Mimic on IR (local)"
   if have_cmd mimic; then
-    ok "Mimic already installed (local)."
+    azhdar_mimic_ensure_service_user_local || true
+    ok "Mimic already installed (local); service account checked."
     return 0
   fi
   if ! have_cmd apt-get; then
@@ -313,13 +314,15 @@ fi
     dpkg -l | grep -i mimic || true
     die "Mimic install failed. If DKMS failed, ensure compatible kernel + headers are available."
   fi
+  azhdar_mimic_ensure_service_user_local || true
   ok "Mimic installed (local)."
 }
 
 install_mimic_remote(){
   step "Install Mimic on OUT (remote)"
   if ssh_run "command -v mimic >/dev/null 2>&1 && echo yes || echo no" | tail -n1 | grep -qx yes; then
-    ok "Mimic already installed (remote)."
+    azhdar_mimic_ensure_service_user_remote || true
+    ok "Mimic already installed (remote); service account checked."
     return 0
   fi
 
@@ -476,5 +479,6 @@ aptq install -y "$tmp/mimic.deb" "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || { echo
 command -v mimic >/dev/null 2>&1 || { echo "MIMIC_INSTALL_FAILED"; exit 7; }
 REMOTE
 
+  azhdar_mimic_ensure_service_user_remote || true
   ok "Mimic installed (remote)."
 }

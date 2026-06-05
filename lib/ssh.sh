@@ -228,11 +228,7 @@ ssh_profile_set_var_silent(){
 ssh_require_vars(){
   # Normalize and validate SSH connection variables before any ssh(1) call.
   # This prevents cryptic errors like: Bad port ''
-  local _orig_host="${OUT_SSH_HOST:-}" _orig_port="${OUT_SSH_PORT:-}" _orig_user="${OUT_SSH_USER:-}"
   ssh_normalize_vars
-  if [[ -n "${PROFILE:-}" ]] && { [[ "${_orig_host}" != "${OUT_SSH_HOST:-}" ]] || [[ "${_orig_port}" != "${OUT_SSH_PORT:-}" ]] || [[ "${_orig_user}" != "${OUT_SSH_USER:-}" ]]; }; then
-    profile_save >/dev/null 2>&1 || true
-  fi
 
   if [[ -z "${OUT_SSH_HOST:-}" ]]; then
     if ssh_interactive && [[ -n "${PROFILE:-}" ]]; then

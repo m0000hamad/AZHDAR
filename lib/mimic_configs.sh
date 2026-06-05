@@ -4,6 +4,117 @@
 # -------------------- Mimic configs (local/remote) --------------------
 
 # ---- Robust Mimic interface/service helpers ----
+
+# Repair/normalize the systemd service account used by mimic@.service.
+# A previously installed Mimic package can leave the unit with User=mimic while
+# the system account is missing. systemd then fails with status=217/USER.
+azhdar_mimic_unit_text_local(){
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl cat mimic@.service 2>/dev/null && return 0
+  fi
+  cat /etc/systemd/system/mimic@.service /usr/lib/systemd/system/mimic@.service /lib/systemd/system/mimic@.service 2>/dev/null || true
+}
+
+azhdar_mimic_extract_unit_value(){
+  # usage: azhdar_mimic_extract_unit_value User|Group
+  local key="$1"
+  awk -F= -v k="$key" '
+    $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
+      v=$2
+      sub(/^[[:space:]]+/, "", v)
+      sub(/[[:space:]]+$/, "", v)
+      if (v != "") last=v
+    }
+    END { if (last != "") print last }
+  '
+}
+
+azhdar_mimic_safe_account_name(){
+  local v="${1:-}"
+  [[ -n "$v" ]] || return 1
+  [[ "$v" != "root" ]] || return 1
+  [[ "$v" != *'%'* && "$v" != *'$'* && "$v" != *'/'* && "$v" != *':'* ]] || return 1
+  [[ "$v" =~ ^[A-Za-z_][A-Za-z0-9_.-]*\$?$ ]] || return 1
+  return 0
+}
+
+azhdar_mimic_ensure_service_user_local(){
+  command -v systemctl >/dev/null 2>&1 || return 0
+  local unit user group primary shell
+  unit="$(azhdar_mimic_unit_text_local 2>/dev/null || true)"
+  [[ -n "$unit" ]] || return 0
+  user="$(printf '%s\n' "$unit" | azhdar_mimic_extract_unit_value User | tail -n1 || true)"
+  group="$(printf '%s\n' "$unit" | azhdar_mimic_extract_unit_value Group | tail -n1 || true)"
+  azhdar_mimic_safe_account_name "$user" || return 0
+  if [[ -n "$group" ]]; then
+    azhdar_mimic_safe_account_name "$group" || group=""
+  fi
+  primary="${group:-$user}"
+  if ! getent group "$primary" >/dev/null 2>&1; then
+    groupadd --system "$primary" >/dev/null 2>&1 || true
+  fi
+  if ! getent passwd "$user" >/dev/null 2>&1; then
+    shell="/usr/sbin/nologin"
+    [[ -x "$shell" ]] || shell="/bin/false"
+    useradd --system --no-create-home --home-dir /var/lib/mimic --shell "$shell" --gid "$primary" "$user" >/dev/null 2>&1 || \
+      useradd -r -M -d /var/lib/mimic -s "$shell" -g "$primary" "$user" >/dev/null 2>&1 || true
+  fi
+  mkdir -p /etc/mimic /var/lib/mimic /run/mimic 2>/dev/null || true
+  chown "$user:$primary" /var/lib/mimic /run/mimic 2>/dev/null || true
+  chmod 755 /etc/mimic /var/lib/mimic /run/mimic 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+azhdar_mimic_ensure_service_user_remote(){
+  ssh_run_stdin_env_root_best_effort <<'REMOTE' >/dev/null 2>&1 || true
+set +e
+unit=""
+if command -v systemctl >/dev/null 2>&1; then
+  unit="$(systemctl cat mimic@.service 2>/dev/null || true)"
+fi
+if [ -z "$unit" ]; then
+  unit="$(cat /etc/systemd/system/mimic@.service /usr/lib/systemd/system/mimic@.service /lib/systemd/system/mimic@.service 2>/dev/null || true)"
+fi
+[ -n "$unit" ] || exit 0
+extract_unit_value(){
+  key="$1"
+  printf '%s\n' "$unit" | awk -F= -v k="$key" '
+    $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {
+      v=$2
+      sub(/^[[:space:]]+/, "", v)
+      sub(/[[:space:]]+$/, "", v)
+      if (v != "") last=v
+    }
+    END { if (last != "") print last }
+  ' | tail -n1
+}
+safe_account_name(){
+  v="$1"
+  [ -n "$v" ] || return 1
+  [ "$v" != "root" ] || return 1
+  case "$v" in *%*|*\$*|*/*|*:*) return 1;; esac
+  printf '%s' "$v" | grep -Eq '^[A-Za-z_][A-Za-z0-9_.-]*\$?$'
+}
+user="$(extract_unit_value User)"
+group="$(extract_unit_value Group)"
+safe_account_name "$user" || exit 0
+if [ -n "$group" ] && ! safe_account_name "$group"; then group=""; fi
+primary="${group:-$user}"
+getent group "$primary" >/dev/null 2>&1 || groupadd --system "$primary" >/dev/null 2>&1 || true
+if ! getent passwd "$user" >/dev/null 2>&1; then
+  shell=/usr/sbin/nologin
+  [ -x "$shell" ] || shell=/bin/false
+  useradd --system --no-create-home --home-dir /var/lib/mimic --shell "$shell" --gid "$primary" "$user" >/dev/null 2>&1 || \
+    useradd -r -M -d /var/lib/mimic -s "$shell" -g "$primary" "$user" >/dev/null 2>&1 || true
+fi
+mkdir -p /etc/mimic /var/lib/mimic /run/mimic 2>/dev/null || true
+chown "$user:$primary" /var/lib/mimic /run/mimic 2>/dev/null || true
+chmod 755 /etc/mimic /var/lib/mimic /run/mimic 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+exit 0
+REMOTE
+}
+
 # Mimic is a per-interface systemd unit: mimic@<interface>.service.
 # On VPS/virtual NICs, native XDP can fail; SKB mode is the safe default.
 
@@ -68,6 +179,7 @@ mimic_restart_local_checked(){
   [[ -f "$cfg" ]] || { err "Mimic config not found: ${cfg}"; return 1; }
 
   mimic_conf_force_skb "$cfg"
+  azhdar_mimic_ensure_service_user_local || true
   systemctl daemon-reload >/dev/null 2>&1 || true
   modprobe mimic >/dev/null 2>&1 || true
   systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
@@ -77,8 +189,9 @@ mimic_restart_local_checked(){
     return 0
   fi
 
-  warn "Local Mimic failed on ${wan}; retrying with forced xdp_mode=skb."
+  warn "Local Mimic failed on ${wan}; retrying with service-account repair and forced xdp_mode=skb."
   mimic_conf_force_skb "$cfg"
+  azhdar_mimic_ensure_service_user_local || true
   systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
   if systemctl restart "mimic@${wan}" >/dev/null 2>&1; then
     ok "Local Mimic recovered on ${wan} with xdp_mode=skb."
@@ -112,6 +225,22 @@ else
   awk 'BEGIN{done=0} {print; if(!done && $0 ~ /^log\.verbosity[[:space:]]*=/){print "xdp_mode = skb"; done=1}} END{if(!done) print "xdp_mode = skb"}' "$CFG" >"${CFG}.tmp.$$" 2>/dev/null && mv -f "${CFG}.tmp.$$" "$CFG" || true
 fi
 chmod 644 "$CFG" 2>/dev/null || true
+# Repair missing service account before start; fixes status=217/USER after partial/old Mimic installs.
+unit="$(systemctl cat mimic@.service 2>/dev/null || cat /etc/systemd/system/mimic@.service /usr/lib/systemd/system/mimic@.service /lib/systemd/system/mimic@.service 2>/dev/null || true)"
+if [ -n "$unit" ]; then
+  u="$(printf '%s
+' "$unit" | awk -F= '/^[[:space:]]*User[[:space:]]*=/{v=$2; sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v); if(v!="") last=v} END{print last}' | tail -n1)"
+  g="$(printf '%s
+' "$unit" | awk -F= '/^[[:space:]]*Group[[:space:]]*=/{v=$2; sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v); if(v!="") last=v} END{print last}' | tail -n1)"
+  case "$u" in ""|root|*%*|*\$*|*/*|*:*) :;; *)
+    case "$g" in ""|*%*|*\$*|*/*|*:*) g="$u";; esac
+    getent group "$g" >/dev/null 2>&1 || groupadd --system "$g" >/dev/null 2>&1 || true
+    getent passwd "$u" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /var/lib/mimic --shell /usr/sbin/nologin --gid "$g" "$u" >/dev/null 2>&1 || true
+    mkdir -p /var/lib/mimic /run/mimic /etc/mimic 2>/dev/null || true
+    chown "$u:$g" /var/lib/mimic /run/mimic 2>/dev/null || true
+    chmod 755 /var/lib/mimic /run/mimic /etc/mimic 2>/dev/null || true
+  esac
+fi
 systemctl daemon-reload >/dev/null 2>&1 || true
 modprobe mimic >/dev/null 2>&1 || true
 systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true

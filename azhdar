@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AZHDAR (modular) v3.2.10
+# AZHDAR (modular) v3.2.11
 set -Eeuo pipefail
 umask 077
 
