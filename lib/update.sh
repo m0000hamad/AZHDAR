@@ -108,7 +108,7 @@ azhdar_update_check(){
   # Sets: UPDATE_LATEST_VERSION UPDATE_PACKAGE_URL UPDATE_PACKAGE_ZIP
   local base="${UPDATE_BASE_URL:-}"
   if [[ -z "$base" ]]; then
-    base="https://dl.digitsell.shop/share/gZ1XGygF"
+    base="https://dl.digitsell.shop/share/Wf-XKNL9"
   fi
 
 
@@ -192,7 +192,7 @@ azhdar_update_menu(){
   banner
   echo -e "${BOLD}${WHT}AZHDAR Update${RST}"
   hr
-  echo -e "${DIM}Source:${RST} ${UPDATE_BASE_URL:-https://dl.digitsell.shop/share/gZ1XGygF}"
+  echo -e "${DIM}Source:${RST} ${UPDATE_BASE_URL:-https://dl.digitsell.shop/share/Wf-XKNL9}"
   echo -e "${DIM}Current version:${RST} ${SCRIPT_VERSION}"
   hr
 

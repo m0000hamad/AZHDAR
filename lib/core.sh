@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.1.15"
+SCRIPT_VERSION="3.1.16"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -22,11 +22,11 @@ GLOBAL_STATE="${BASE_DIR}/global.env"
 LOG_FILE="${BASE_DIR}/manager.log"
 
 # Self-update (auto-discover latest zip from directory listing).
-UPDATE_BASE_URL_DEFAULT="http://62.60.184.163/share/Wf-XKNL9"
+UPDATE_BASE_URL_DEFAULT="https://62.60.184.163/share/gZ1XGygF"
 UPDATE_BASE_URL="${UPDATE_BASE_URL:-$UPDATE_BASE_URL_DEFAULT}"
 
 # Asset mirrors (useful when GitHub is filtered).
-ASSET_MIRROR_BASE_DEFAULT="https://dl.digitsell.shop/share/Wf-XKNL9"
+ASSET_MIRROR_BASE_DEFAULT="https://dl.digitsell.shop/share/gZ1XGygF"
 ASSET_MIRROR_BASE="${ASSET_MIRROR_BASE:-$ASSET_MIRROR_BASE_DEFAULT}"
 
 # Default candidates (ports that typically blend in)
@@ -335,18 +335,15 @@ prompt_port(){
 
 prompt_mtu(){
   local prompt="$1" default="${2:-1272}"
-  [[ "$default" =~ ^[0-9]+$ ]] || default="1272"
-  (( default < 1272 )) && default="1272"
-  (( default > 1500 )) && default="1500"
   local v=""
   while true; do
-    read -rp "${prompt} (1272..1500) [${default}]: " v || true
+    read -rp "${prompt} (576..1500) [${default}]: " v || true
     v="${v:-$default}"
     v="${v//[[:space:]]/}"
-    if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 1272 && v <= 1500 )); then
+    if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 576 && v <= 1500 )); then
       echo "$v"; return 0
     fi
-    warn "MTU must be between 1272 and 1500."
+    warn "MTU must be between 576 and 1500."
   done
 }
 
