@@ -353,10 +353,8 @@ ssh_fallback_ensure_key_auth(){
     -o ConnectTimeout=8
     -o ServerAliveInterval=10
     -o ServerAliveCountMax=1
-    -o PreferredAuthentications=publickey,password,keyboard-interactive
     -o KbdInteractiveAuthentication=yes
     -o PasswordAuthentication=yes
-    -o PubkeyAuthentication=yes
   )
 
   local -a ident_opt=()
@@ -365,7 +363,7 @@ ssh_fallback_ensure_key_auth(){
   fi
 
   # 1) Fast key-only check
-  if ssh -p "$port" -o BatchMode=yes "${base_opts[@]}" "${ident_opt[@]}" "${user}@${host}" "true" >/dev/null 2>&1; then
+  if ssh -p "$port" -o BatchMode=yes -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey "${base_opts[@]}" "${ident_opt[@]}" "${user}@${host}" "true" >/dev/null 2>&1; then
     ok "Key-based SSH auth is OK."
     return 0
   fi
@@ -415,13 +413,19 @@ ssh_fallback_ensure_key_auth(){
   local rcmd
   rcmd="mkdir -p /root/.ssh && chmod 700 /root/.ssh; touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys; grep -qxF $(printf %q \"$pub\") /root/.ssh/authorized_keys || echo $(printf %q \"$pub\") >> /root/.ssh/authorized_keys"
 
-  if (( have_pw == 1 )) && have_cmd sshpass; then
-    SSHPASS="${OUT_SSH_PASS}" sshpass -e ssh -p "$port" -tt "${base_opts[@]}" "${ident_opt[@]}" "${user}@${host}" "bash -lc $(printf %q \"$rcmd\")" >/dev/null 2>&1 || true
+  local -a pass_opts=()
+  if [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+    pass_opts=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=3)
   else
-    ssh -p "$port" -tt "${base_opts[@]}" "${ident_opt[@]}" "${user}@${host}" "bash -lc $(printf %q \"$rcmd\")" >/dev/null 2>&1 || true
+    pass_opts=(-o PubkeyAuthentication=yes -o PreferredAuthentications=publickey,password,keyboard-interactive -o NumberOfPasswordPrompts=3)
+  fi
+  if (( have_pw == 1 )) && have_cmd sshpass; then
+    SSHPASS="${OUT_SSH_PASS}" sshpass -e ssh -p "$port" -tt "${base_opts[@]}" "${pass_opts[@]}" "${ident_opt[@]}" "${user}@${host}" "bash -lc $(printf %q "$rcmd")" >/dev/null 2>&1 || true
+  else
+    ssh -p "$port" -tt "${base_opts[@]}" "${ident_opt[@]}" "${user}@${host}" "bash -lc $(printf %q "$rcmd")" >/dev/null 2>&1 || true
   fi
 
-  if ssh -p "$port" -o BatchMode=yes "${base_opts[@]}" "${ident_opt[@]}" "${user}@${host}" "true" >/dev/null 2>&1; then
+  if ssh -p "$port" -o BatchMode=yes -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey "${base_opts[@]}" "${ident_opt[@]}" "${user}@${host}" "true" >/dev/null 2>&1; then
     ok "SSH key installed for ${user}@${host}."
     return 0
   fi
@@ -656,7 +660,7 @@ ssh_fallback_write_service_local(){
   if (( use_pw == 1 )); then
     # NOTE: SSHPASS is stored in the unit file; permissions are tightened to 0600.
     envline="Environment=\"SSHPASS=${OUT_SSH_PASS}\""
-    exec="/usr/bin/sshpass -e /usr/bin/ssh -N ${gopt} -o BatchMode=no"
+    exec="/usr/bin/sshpass -e /usr/bin/ssh -N ${gopt} -o BatchMode=no -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=3"
   else
     exec="${bin} ${mopt} -N ${gopt} -o BatchMode=yes"
   fi

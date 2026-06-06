@@ -497,12 +497,19 @@ ssh_exec_cmd_on(){
     -o ServerAliveInterval=15
     -o ServerAliveCountMax=2
     -o ConnectTimeout="${AZHDAR_SSH_CONNECT_TIMEOUT:-8}"
-    -o PreferredAuthentications=publickey,password,keyboard-interactive
     -o KbdInteractiveAuthentication=yes
     -o PasswordAuthentication=yes
-    -o PubkeyAuthentication=yes
-    -o NumberOfPasswordPrompts=1
+    -o NumberOfPasswordPrompts=3
   )
+  # Password auth through sshpass must not be eaten by encrypted local keys.
+  # If no explicit identity was configured, skip publickey and test the supplied
+  # password directly. Manual SSH can work while sshpass fails otherwise,
+  # because sshpass may send the server password to a local key passphrase prompt.
+  if (( have_pw == 1 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+    opts+=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive)
+  else
+    opts+=(-o PubkeyAuthentication=yes -o PreferredAuthentications=publickey,password,keyboard-interactive)
+  fi
 
   if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]] && ssh_tty_flag_ok; then
     flags+=(-tt)
@@ -608,12 +615,19 @@ ssh_exec_stdin_on(){
     -o ServerAliveInterval=15
     -o ServerAliveCountMax=2
     -o ConnectTimeout="${AZHDAR_SSH_CONNECT_TIMEOUT:-8}"
-    -o PreferredAuthentications=publickey,password,keyboard-interactive
     -o KbdInteractiveAuthentication=yes
     -o PasswordAuthentication=yes
-    -o PubkeyAuthentication=yes
-    -o NumberOfPasswordPrompts=1
+    -o NumberOfPasswordPrompts=3
   )
+  # Password auth through sshpass must not be eaten by encrypted local keys.
+  # If no explicit identity was configured, skip publickey and test the supplied
+  # password directly. Manual SSH can work while sshpass fails otherwise,
+  # because sshpass may send the server password to a local key passphrase prompt.
+  if (( have_pw == 1 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+    opts+=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive)
+  else
+    opts+=(-o PubkeyAuthentication=yes -o PreferredAuthentications=publickey,password,keyboard-interactive)
+  fi
   if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]] && ssh_tty_flag_ok; then
     flags+=(-tt)
   fi
@@ -838,10 +852,18 @@ ssh_autodetect_port(){
     ssh_prepare_known_hosts_for "$host" "$p" "$kh_p" >/dev/null 2>&1 || true
 
     if [[ -n "${OUT_SSH_PASS:-}" ]] && have_cmd sshpass; then
+      local -a pw_auth_opts=(
+        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$kh_p" -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o UpdateHostKeys=no
+        -o ConnectTimeout="${AZHDAR_SSH_CONNECT_TIMEOUT:-8}" -o ServerAliveInterval=10 -o ServerAliveCountMax=1
+        -o KbdInteractiveAuthentication=yes -o PasswordAuthentication=yes -o NumberOfPasswordPrompts=3
+      )
+      if [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+        pw_auth_opts+=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive)
+      else
+        pw_auth_opts+=(-o PubkeyAuthentication=yes -o PreferredAuthentications=publickey,password,keyboard-interactive)
+      fi
       if SSHPASS="${OUT_SSH_PASS}" sshpass -e ssh -p "$p" \
-        -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$kh_p" -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o UpdateHostKeys=no \
-        -o ConnectTimeout="${AZHDAR_SSH_CONNECT_TIMEOUT:-8}" -o ServerAliveInterval=10 -o ServerAliveCountMax=1 \
-        -o NumberOfPasswordPrompts=1 \
+        "${pw_auth_opts[@]}" \
         "${ident_opt[@]}" "${user}@${host}" "true" >/dev/null 2>&1; then
         echo "$p"; return 0
       fi
@@ -938,8 +960,31 @@ ssh_check(){
         fi
       fi
       warn "SSH password retry failed."
+      # Do not stop here: if the password is correct but sshpass was confused by
+      # a local key prompt or host-key edge case, a real interactive SSH attempt
+      # should still be allowed before declaring failure.
+      OUT_SSH_PASS=""
+      profile_save >/dev/null 2>&1 || true
+      info "Trying a real interactive SSH prompt now. Enter the same server password if prompted."
+      ssh_check_run_once 0
+      rc=$?
+      if (( rc == 0 )); then
+        warn "Interactive SSH worked. The previous cached/non-interactive password was not usable."
+        local _save_pw2=""
+        read -rsp "Enter OUT SSH password once more to save for automated install steps, or press ENTER to continue interactively: " _save_pw2 || true
+        echo
+        if [[ -n "${_save_pw2:-}" ]]; then
+          OUT_SSH_PASS="${_save_pw2}"
+          ssh_ensure_sshpass_for_password >/dev/null 2>&1 || true
+          profile_save >/dev/null 2>&1 || true
+        fi
+        ssh_check_success_msg
+        (( _had_errexit == 1 )) && set -e
+        return 0
+      fi
     else
       OUT_SSH_PASS=""
+      profile_save >/dev/null 2>&1 || true
       info "Trying interactive SSH. Accept the host key and enter the server password if prompted."
       ssh_check_run_once 0
       rc=$?
