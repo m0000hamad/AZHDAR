@@ -378,7 +378,7 @@ ssh_fallback_ensure_key_auth(){
 
   if (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
     # Interactive prompt (do NOT save unless user already had OUT_SSH_PASS).
-    if [[ -t 0 && -t 1 ]]; then
+    if ssh_interactive; then
       warn "SSH key auth is not set up yet."
       warn "To avoid hanging, AZHDAR will ask for the SSH password once (not saved)."
       local tmp_pw=""

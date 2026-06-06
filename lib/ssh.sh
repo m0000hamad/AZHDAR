@@ -4,7 +4,23 @@
 # -------------------- SSH helpers --------------------
 
 ssh_interactive(){
-  [[ -t 0 && -t 1 ]]
+  # True when a human can answer prompts.  Do not require stdout to be a TTY:
+  # many AZHDAR checks capture stdout (command substitution) or hide stderr,
+  # while manual SSH still works from the same terminal.
+  [[ -t 0 || -t 2 || -r /dev/tty ]]
+}
+
+ssh_can_prompt(){
+  # OpenSSH can read passphrases/passwords from the controlling tty even when
+  # stdin is a heredoc/script and stdout is captured.  Use this for deciding
+  # whether BatchMode should be disabled.
+  [[ -t 0 || -t 2 || -r /dev/tty ]]
+}
+
+ssh_tty_flag_ok(){
+  # Only force a remote pseudo-tty when stdin is a real tty.  For heredoc/stdin
+  # script uploads, -tt can consume the script input incorrectly.
+  [[ -t 0 ]]
 }
 
 ssh_safe_token(){
@@ -207,6 +223,25 @@ ssh_normalize_vars(){
   else
     SSH_USE_MASTER="${SSH_USE_MASTER:-0}"
   fi
+}
+
+ssh_ensure_sshpass_for_password(){
+  # Password auth through AZHDAR needs sshpass for non-interactive remote steps.
+  # Manual `ssh user@host` can work without it, so silently try to install it
+  # when a password is saved or just re-entered.
+  [[ -n "${OUT_SSH_PASS:-}" ]] || return 0
+  have_cmd sshpass && return 0
+  local pm; pm="$(detect_pkg_mgr 2>/dev/null || echo unknown)"
+  case "$pm" in
+    apt)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y >/dev/null 2>&1 || true
+      apt-get install -y sshpass >/dev/null 2>&1 || true
+      ;;
+    dnf) dnf install -y sshpass >/dev/null 2>&1 || true ;;
+    yum) yum install -y sshpass >/dev/null 2>&1 || true ;;
+    pacman) pacman -Sy --noconfirm sshpass >/dev/null 2>&1 || true ;;
+  esac
 }
 
 ssh_profile_set_var_silent(){
@@ -443,8 +478,11 @@ ssh_exec_cmd_on(){
   # usage: ssh_exec_cmd_on <host> <port> <label> <command>
   local host="$1" port="$2" label="$3" cmd="$4"
   local have_pw=0 interactive=0 kh cp rc
+  if [[ -n "${OUT_SSH_PASS:-}" ]] && ! have_cmd sshpass; then
+    ssh_ensure_sshpass_for_password >/dev/null 2>&1 || true
+  fi
   [[ -n "${OUT_SSH_PASS:-}" ]] && have_cmd sshpass && have_pw=1 || true
-  [[ -t 0 && -t 1 ]] && interactive=1
+  ssh_can_prompt && interactive=1 || true
 
   kh="$(ssh_known_hosts_file_for "$host" "$port")"
   ssh_prepare_known_hosts_for "$host" "$port" "$kh" >/dev/null 2>&1 || true
@@ -466,7 +504,7 @@ ssh_exec_cmd_on(){
     -o NumberOfPasswordPrompts=1
   )
 
-  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]] && ssh_tty_flag_ok; then
     flags+=(-tt)
   fi
   if (( interactive == 0 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
@@ -552,8 +590,11 @@ ssh_exec_stdin_on(){
   # usage: ssh_exec_stdin_on <host> <port> <label> [remote command...]
   local host="$1" port="$2" label="$3"; shift 3
   local have_pw=0 interactive=0 kh cp rc
+  if [[ -n "${OUT_SSH_PASS:-}" ]] && ! have_cmd sshpass; then
+    ssh_ensure_sshpass_for_password >/dev/null 2>&1 || true
+  fi
   [[ -n "${OUT_SSH_PASS:-}" ]] && have_cmd sshpass && have_pw=1 || true
-  [[ -t 0 && -t 1 ]] && interactive=1
+  ssh_can_prompt && interactive=1 || true
   kh="$(ssh_known_hosts_file_for "$host" "$port")"
   ssh_prepare_known_hosts_for "$host" "$port" "$kh" >/dev/null 2>&1 || true
 
@@ -573,7 +614,7 @@ ssh_exec_stdin_on(){
     -o PubkeyAuthentication=yes
     -o NumberOfPasswordPrompts=1
   )
-  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]] && ssh_tty_flag_ok; then
     flags+=(-tt)
   fi
   if (( interactive == 0 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
@@ -861,7 +902,7 @@ ssh_check(){
   fi
 
   local interactive=0 have_pw=0 quiet=1
-  [[ -t 0 && -t 1 ]] && interactive=1
+  ssh_can_prompt && interactive=1 || true
   [[ -n "${OUT_SSH_PASS:-}" && "$(command -v sshpass 2>/dev/null || true)" != "" ]] && have_pw=1 || true
   if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
     quiet=0
@@ -903,7 +944,15 @@ ssh_check(){
       ssh_check_run_once 0
       rc=$?
       if (( rc == 0 )); then
-        profile_save >/dev/null 2>&1 || true
+        warn "Manual interactive SSH worked, but no password/key is saved for non-interactive install steps."
+        local _save_pw=""
+        read -rsp "Enter OUT SSH password to save for the rest of this install, or press ENTER to continue with interactive prompts: " _save_pw || true
+        echo
+        if [[ -n "${_save_pw:-}" ]]; then
+          OUT_SSH_PASS="${_save_pw}"
+          ssh_ensure_sshpass_for_password >/dev/null 2>&1 || true
+          profile_save >/dev/null 2>&1 || true
+        fi
         ssh_check_success_msg
         (( _had_errexit == 1 )) && set -e
         return 0
