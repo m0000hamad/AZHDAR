@@ -102,11 +102,11 @@ ping4_local_cmd(){
   local dst="$1"
   local src="${IR_WG_IP:-}"
   # IMPORTANT:
-  # - iputils ping treats -I as "interface OR source address".
-  # - If WG_IF looks like an IPv4 (e.g. "155.103.71.135"), ping will treat it as an address and fail.
-  # So we prefer using the tunnel source IP, not the interface name.
+  # - Some kernels/routes reject ping -I <source-ip> while a normal routed ping works.
+  # - Health must reflect real connectivity, not just the source-bound probe.
+  # Try source-bound first, then fall back to the exact manual test users run: ping <peer>.
   if [[ -n "$src" ]] && is_ipv4 "$src"; then
-    ping -c1 -W1 -I "$src" "$dst"
+    ping -c1 -W1 -I "$src" "$dst" || ping -c1 -W1 "$dst"
   else
     ping -c1 -W1 "$dst"
   fi
@@ -116,7 +116,7 @@ ping6_local_cmd(){
   local dst="$1"
   local src="${IR_WG_IP6:-}"
   if [[ -n "$src" ]] && is_ipv6 "$src"; then
-    ping -6 -c1 -W1 -I "$src" "$dst" 2>/dev/null || ping6 -c1 -W1 -I "$src" "$dst"
+    ping -6 -c1 -W1 -I "$src" "$dst" 2>/dev/null || ping6 -c1 -W1 -I "$src" "$dst" 2>/dev/null || ping -6 -c1 -W1 "$dst" 2>/dev/null || ping6 -c1 -W1 "$dst"
   else
     ping -6 -c1 -W1 "$dst" 2>/dev/null || ping6 -c1 -W1 "$dst"
   fi
@@ -136,7 +136,7 @@ ping4_remote_cmd(){
   local dst="$1"
   local src="${OUT_WG_IP:-}"
   if [[ -n "$src" ]] && is_ipv4 "$src"; then
-    ssh_run "ping -c1 -W1 -I '${src}' '${dst}'"
+    ssh_run "ping -c1 -W1 -I '${src}' '${dst}' || ping -c1 -W1 '${dst}'"
   else
     ssh_run "ping -c1 -W1 '${dst}'"
   fi
@@ -146,7 +146,7 @@ ping6_remote_cmd(){
   local dst="$1"
   local src="${OUT_WG_IP6:-}"
   if [[ -n "$src" ]] && is_ipv6 "$src"; then
-    ssh_run "(ping -6 -c1 -W1 -I '${src}' '${dst}' 2>/dev/null) || (ping6 -c1 -W1 -I '${src}' '${dst}')"
+    ssh_run "(ping -6 -c1 -W1 -I '${src}' '${dst}' 2>/dev/null) || (ping6 -c1 -W1 -I '${src}' '${dst}' 2>/dev/null) || (ping -6 -c1 -W1 '${dst}' 2>/dev/null) || (ping6 -c1 -W1 '${dst}')"
   else
     ssh_run "(ping -6 -c1 -W1 '${dst}' 2>/dev/null) || (ping6 -c1 -W1 '${dst}')"
   fi
@@ -629,9 +629,10 @@ profile_status_board(){
     return 0
   fi
 
-  local ssh_ok=0 wg_svc_active=0 wg_ok=0 mimic_ok=0
+  local ssh_ok=0 wg_svc_active=0 wg_link_up=0 wg_ok=0 mimic_ok=0
   if [[ -n "${OUT_SSH_HOST:-}" ]] && ssh_run "echo OK" >/dev/null 2>&1; then ssh_ok=1; fi
   systemctl is-active --quiet "${wgsvc}" 2>/dev/null && wg_svc_active=1 || true
+  ip link show dev "${WG_IF}" >/dev/null 2>&1 && wg_link_up=1 || true
   if systemctl is-active --quiet "${mimicsvc}" 2>/dev/null; then
     mimic_profile_present_local "${PROFILE}" && mimic_ok=1 || mimic_ok=0
   fi
@@ -677,7 +678,7 @@ profile_status_board(){
 
   # Ping indicators (WG IPs)
   local p4=0 p6=0 rp4=0 rp6=0
-  if (( wg_svc_active == 1 )); then
+  if (( wg_svc_active == 1 || wg_link_up == 1 )); then
     if [[ "${ENABLE_TUN_IPV4:-1}" == "1" && -n "${OUT_WG_IP:-}" ]]; then
       ping4_local_once "${OUT_WG_IP}" && p4=1 || true
     fi
@@ -699,7 +700,7 @@ profile_status_board(){
 
   # Determine WG connectivity more accurately than just systemd status.
   # If service is active but there is no recent handshake and no ping success, WG is treated as "down".
-  (( wg_svc_active == 1 && ( wg_hs_recent == 1 || p4 == 1 || p6 == 1 || rp4 == 1 || rp6 == 1 ) )) && wg_ok=1 || wg_ok=0
+  (( (wg_svc_active == 1 || wg_link_up == 1) && ( wg_hs_recent == 1 || p4 == 1 || p6 == 1 || rp4 == 1 || rp6 == 1 ) )) && wg_ok=1 || wg_ok=0
 
   # Remote WG connectivity (best-effort): require service active and recent handshake.
   if (( ssh_ok == 1 && remote_wg_svc_active == 1 )); then

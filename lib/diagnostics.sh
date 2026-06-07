@@ -104,8 +104,9 @@ connection_indicator(){
   local wan; wan="$(detect_wan_if)"
   local mimicsvc="mimic@${wan}"
 
-  local wg_svc_active=0 wg_active=0 mimic_active=0
+  local wg_svc_active=0 wg_link_up=0 wg_active=0 mimic_active=0
   systemctl is-active --quiet "$wgsvc" 2>/dev/null && wg_svc_active=1 || true
+  ip link show dev "$WG_IF" >/dev/null 2>&1 && wg_link_up=1 || true
   systemctl is-active --quiet "$mimicsvc" 2>/dev/null && mimic_active=1 || true
 
   # Local SSH fallback state (if enabled)
@@ -138,7 +139,7 @@ connection_indicator(){
 
   # Ping WG IPs (IR → OUT)
   local p4=0 p6=0 rp4=0 rp6=0
-  if (( wg_svc_active == 1 )); then
+  if (( wg_svc_active == 1 || wg_link_up == 1 )); then
     if [[ "${ENABLE_TUN_IPV4:-1}" == "1" && -n "${OUT_WG_IP:-}" && "${OUT_WG_IP}" != "peer" ]]; then
       ping4_local_once "${OUT_WG_IP}" && p4=1 || true
     fi
@@ -164,11 +165,11 @@ connection_indicator(){
     local now_hs; now_hs="$(date +%s 2>/dev/null || echo 0)"
     (( now_hs - hs <= 180 )) && wg_hs_recent=1 || true
   fi
-  (( wg_svc_active == 1 && ( wg_hs_recent == 1 || p4 == 1 || p6 == 1 || rp4 == 1 || rp6 == 1 ) )) && wg_active=1 || wg_active=0
+  (( (wg_svc_active == 1 || wg_link_up == 1) && ( wg_hs_recent == 1 || p4 == 1 || p6 == 1 || rp4 == 1 || rp6 == 1 ) )) && wg_active=1 || wg_active=0
 
   local az_ok=0
   if [[ "${WG_MODE:-classic}" == "account" ]]; then
-    (( wg_svc_active == 1 && ( wg_hs_recent == 1 || p4 == 1 || p6 == 1 ) )) && az_ok=1 || true
+    (( (wg_svc_active == 1 || wg_link_up == 1) && ( wg_hs_recent == 1 || p4 == 1 || p6 == 1 ) )) && az_ok=1 || true
   else
     (( p4 == 1 || p6 == 1 || rp4 == 1 || rp6 == 1 )) && az_ok=1 || true
   fi
