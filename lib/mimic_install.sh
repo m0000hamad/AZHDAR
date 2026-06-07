@@ -622,7 +622,13 @@ if [[ "$okcod" == "no" ]]; then
   fi
 fi
 
-  ssh_run_stdin_env_root "CODENAME=${codename}" "MIMIC_FB_DEB=${fb1}" "MIMIC_FB_DKMS=${fb2}" "ASSET_MIRROR_NAME=${ASSET_MIRROR_NAME:-m0000hamad}" <<'REMOTE'
+  # Run the remote installer in a captured, non-errexit block. A failed
+  # remote attempt is recoverable here (we may still find a healthy Mimic
+  # package/module after apt fallbacks), so do not let the global ERR trap
+  # print a misleading "Fatal" before we inspect the final state.
+  local remote_out="" remote_rc=0 _azhdar_had_errexit=0
+  [[ $- == *e* ]] && _azhdar_had_errexit=1 && set +e
+  remote_out="$(ssh_run_stdin_env_root "CODENAME=${codename}" "MIMIC_FB_DEB=${fb1}" "MIMIC_FB_DKMS=${fb2}" "ASSET_MIRROR_NAME=${ASSET_MIRROR_NAME:-m0000hamad}" <<'REMOTE'
 set -euo pipefail
 
 if ! command -v apt-get >/dev/null 2>&1; then
@@ -813,6 +819,30 @@ aptq install -y "$tmp/mimic.deb" "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || { echo
 
 command -v mimic >/dev/null 2>&1 && dpkg-query -W -f='${Status}' mimic 2>/dev/null | grep -qx 'install ok installed' && dpkg-query -W -f='${Status}' mimic-dkms 2>/dev/null | grep -qx 'install ok installed' && modinfo mimic >/dev/null 2>&1 || { echo "MIMIC_INSTALL_FAILED_OR_DKMS_MODULE_MISSING"; exit 7; }
 REMOTE
+)"
+  remote_rc=$?
+  (( _azhdar_had_errexit )) && set -e
+
+  if (( remote_rc != 0 )); then
+    # Print the useful part of the remote output once, without raising the
+    # global fatal trap. Then verify the actual remote state; if Mimic ended up
+    # healthy, continue with a warning instead of aborting.
+    [[ -n "$remote_out" ]] && printf '%s
+' "$remote_out" | tail -n 120
+    if ssh_run "command -v mimic >/dev/null 2>&1 && dpkg-query -W -f='\${Status}' mimic 2>/dev/null | grep -qx 'install ok installed' && dpkg-query -W -f='\${Status}' mimic-dkms 2>/dev/null | grep -qx 'install ok installed' && modinfo mimic >/dev/null 2>&1" >/dev/null 2>&1; then
+      warn "Remote Mimic installer returned rc=${remote_rc}, but package/module is healthy now; continuing."
+    else
+      err "Remote Mimic install did not complete cleanly (rc=${remote_rc})."
+      err "Check remote logs: dpkg -l | grep mimic ; dkms status ; tail -n 80 /var/lib/dkms/mimic/*/build/make.log"
+      return "$remote_rc"
+    fi
+  else
+    # Keep successful output concise; show only meaningful informational lines.
+    if [[ -n "$remote_out" ]]; then
+      printf '%s
+' "$remote_out" | grep -E '^(USING_STABLE_MIRROR|\[i\]|WARN:|ERR:|OK:)' || true
+    fi
+  fi
 
   azhdar_mimic_ensure_service_user_remote || true
   ok "Mimic installed (remote)."
