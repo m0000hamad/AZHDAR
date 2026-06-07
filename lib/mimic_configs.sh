@@ -115,6 +115,44 @@ exit 0
 REMOTE
 }
 
+
+
+azhdar_mimic_clear_runtime_local(){
+  # Remove stale Mimic runtime locks after a failed/crashed start.
+  # Mimic may leave /run/mimic/*.lock behind; next start then exits with
+  # status=17 and "no version found in lock file" / "failed to lock".
+  local wan="${1:-}"
+  if command -v systemctl >/dev/null 2>&1 && [[ -n "$wan" ]]; then
+    systemctl stop "mimic@${wan}" >/dev/null 2>&1 || true
+    systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
+  fi
+  if command -v pkill >/dev/null 2>&1 && [[ -n "$wan" ]]; then
+    pkill -TERM -f "(^|[ /])mimic([ ]+run)?[ ]+${wan}([ ]|$)" >/dev/null 2>&1 || true
+    sleep 0.3
+    pkill -KILL -f "(^|[ /])mimic([ ]+run)?[ ]+${wan}([ ]|$)" >/dev/null 2>&1 || true
+  fi
+  mkdir -p /run/mimic /var/lib/mimic 2>/dev/null || true
+  # Safe in AZHDAR because one mimic@<wan> unit owns the combined config for all profiles on this host.
+  find /run/mimic -maxdepth 1 -type f -name '*.lock' -delete 2>/dev/null || true
+  find /run/mimic -maxdepth 1 -type s -delete 2>/dev/null || true
+}
+
+azhdar_mimic_ensure_kernel_module_local(){
+  # Best-effort DKMS/module recovery. If the log says BPF cannot find
+  # mimic_change_csum_offset or asks whether the Mimic kernel module is loaded,
+  # this path rebuilds/loads the module before the final restart attempt.
+  modprobe mimic >/dev/null 2>&1 && return 0
+  if command -v dkms >/dev/null 2>&1; then
+    dkms autoinstall -k "$(uname -r)" >/dev/null 2>&1 || dkms autoinstall >/dev/null 2>&1 || true
+    dkms status 2>/dev/null | awk -F'[:,]' '/^mimic\//{print $1}' | while read -r mod; do
+      ver="${mod#mimic/}"
+      [ -n "$ver" ] && dkms install -m mimic -v "$ver" -k "$(uname -r)" >/dev/null 2>&1 || true
+    done
+  fi
+  depmod -a >/dev/null 2>&1 || true
+  modprobe mimic >/dev/null 2>&1 || true
+}
+
 # Mimic is a per-interface systemd unit: mimic@<interface>.service.
 # On VPS/virtual NICs, native XDP can fail; SKB mode is the safe default.
 
@@ -181,7 +219,8 @@ mimic_restart_local_checked(){
   mimic_conf_force_skb "$cfg"
   azhdar_mimic_ensure_service_user_local || true
   systemctl daemon-reload >/dev/null 2>&1 || true
-  modprobe mimic >/dev/null 2>&1 || true
+  azhdar_mimic_ensure_kernel_module_local || true
+  azhdar_mimic_clear_runtime_local "$wan" || true
   systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
   systemctl enable "mimic@${wan}" >/dev/null 2>&1 || true
 
@@ -189,12 +228,15 @@ mimic_restart_local_checked(){
     return 0
   fi
 
-  warn "Local Mimic failed on ${wan}; retrying with service-account repair and forced xdp_mode=skb."
+  warn "Local Mimic failed on ${wan}; clearing stale locks, repairing module/account, and retrying."
   mimic_conf_force_skb "$cfg"
   azhdar_mimic_ensure_service_user_local || true
+  azhdar_mimic_ensure_kernel_module_local || true
+  azhdar_mimic_clear_runtime_local "$wan" || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
   if systemctl restart "mimic@${wan}" >/dev/null 2>&1; then
-    ok "Local Mimic recovered on ${wan} with xdp_mode=skb."
+    ok "Local Mimic recovered on ${wan} after stale-lock/module repair."
     return 0
   fi
 
@@ -241,12 +283,46 @@ if [ -n "$unit" ]; then
     chmod 755 /var/lib/mimic /run/mimic /etc/mimic 2>/dev/null || true
   esac
 fi
+clear_mimic_runtime(){
+  systemctl stop "mimic@${WAN_IF}" >/dev/null 2>&1 || true
+  systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -TERM -f "(^|[ /])mimic([ ]+run)?[ ]+${WAN_IF}([ ]|$)" >/dev/null 2>&1 || true
+    sleep 0.3
+    pkill -KILL -f "(^|[ /])mimic([ ]+run)?[ ]+${WAN_IF}([ ]|$)" >/dev/null 2>&1 || true
+  fi
+  mkdir -p /run/mimic /var/lib/mimic 2>/dev/null || true
+  find /run/mimic -maxdepth 1 -type f -name '*.lock' -delete 2>/dev/null || true
+  find /run/mimic -maxdepth 1 -type s -delete 2>/dev/null || true
+}
+ensure_mimic_module(){
+  modprobe mimic >/dev/null 2>&1 && return 0
+  if command -v dkms >/dev/null 2>&1; then
+    dkms autoinstall -k "$(uname -r)" >/dev/null 2>&1 || dkms autoinstall >/dev/null 2>&1 || true
+    dkms status 2>/dev/null | awk -F'[:,]' '/^mimic\//{print $1}' | while read -r mod; do
+      ver="${mod#mimic/}"
+      [ -n "$ver" ] && dkms install -m mimic -v "$ver" -k "$(uname -r)" >/dev/null 2>&1 || true
+    done
+  fi
+  depmod -a >/dev/null 2>&1 || true
+  modprobe mimic >/dev/null 2>&1 || true
+}
 systemctl daemon-reload >/dev/null 2>&1 || true
-modprobe mimic >/dev/null 2>&1 || true
+ensure_mimic_module || true
+clear_mimic_runtime || true
 systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
 systemctl enable "mimic@${WAN_IF}" >/dev/null 2>&1 || true
 if systemctl restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
   echo "OK:REMOTE_MIMIC:${WAN_IF}"
+  exit 0
+fi
+echo "WARN:REMOTE_MIMIC_RETRY:${WAN_IF}"
+ensure_mimic_module || true
+clear_mimic_runtime || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
+if systemctl restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
+  echo "OK:REMOTE_MIMIC:${WAN_IF}:recovered"
   exit 0
 fi
 echo "ERR:REMOTE_MIMIC_FAILED:${WAN_IF}"
