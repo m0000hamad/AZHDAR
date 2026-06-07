@@ -290,18 +290,11 @@ esac
     OUT_SSH_PASS="${_pw}"
     if ! have_cmd sshpass; then
       warn "sshpass not found; installing (for password-based non-interactive SSH)..."
-      local pm; pm="$(detect_pkg_mgr)"
-      case "$pm" in
-        apt)
-          export DEBIAN_FRONTEND=noninteractive
-          DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update -y >/dev/null 2>&1 || true
-          DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y sshpass >/dev/null 2>&1 || true
-          ;;
-        dnf) dnf install -y sshpass >/dev/null 2>&1 || true ;;
-        yum) yum install -y sshpass >/dev/null 2>&1 || true ;;
-        pacman) pacman -Sy --noconfirm sshpass >/dev/null 2>&1 || true ;;
-      esac
-      have_cmd sshpass || warn "sshpass still missing; SSH may prompt interactively."
+      if ssh_ensure_sshpass_for_password; then
+        ok "sshpass is ready."
+      else
+        warn "sshpass still missing; SSH may prompt interactively instead of failing as a bad password."
+      fi
     fi
   fi
   read -rp "OUT SSH identity file (optional) [${OUT_SSH_IDENTITY:-none}]: " ident || true

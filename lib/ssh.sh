@@ -227,21 +227,47 @@ ssh_normalize_vars(){
 
 ssh_ensure_sshpass_for_password(){
   # Password auth through AZHDAR needs sshpass for non-interactive remote steps.
-  # Manual `ssh user@host` can work without it, so silently try to install it
-  # when a password is saved or just re-entered.
+  # Manual `ssh user@host` can work without it, so try hard to install it when
+  # a password is saved or just re-entered.  Return success only when sshpass is
+  # actually available; callers can then decide whether to fall back to a real
+  # interactive OpenSSH prompt instead of falsely blaming the password.
   [[ -n "${OUT_SSH_PASS:-}" ]] || return 0
   have_cmd sshpass && return 0
   local pm; pm="$(detect_pkg_mgr 2>/dev/null || echo unknown)"
   case "$pm" in
     apt)
       export DEBIAN_FRONTEND=noninteractive
-      apt-get update -y >/dev/null 2>&1 || true
-      apt-get install -y sshpass >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none         apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update -y >/dev/null 2>&1 || true
+      DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none         apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y sshpass >/dev/null 2>&1 || true
+      if ! have_cmd sshpass && command -v add-apt-repository >/dev/null 2>&1; then
+        add-apt-repository -y universe >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none           apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update -y >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none           apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y sshpass >/dev/null 2>&1 || true
+      fi
       ;;
     dnf) dnf install -y sshpass >/dev/null 2>&1 || true ;;
     yum) yum install -y sshpass >/dev/null 2>&1 || true ;;
     pacman) pacman -Sy --noconfirm sshpass >/dev/null 2>&1 || true ;;
   esac
+  hash -r 2>/dev/null || true
+  have_cmd sshpass
+}
+
+ssh_restore_probe_state(){
+  # Restore the ERR trap / errexit state after best-effort probes.  SSH probes are
+  # intentionally allowed to return non-zero without triggering the global fatal
+  # trap, otherwise a normal auth retry becomes "Fatal: unknown" in the UI.
+  local had_errexit="${1:-0}" saved_trap="${2:-}"
+  if [[ -n "$saved_trap" ]]; then
+    eval "$saved_trap"
+  else
+    trap - ERR
+  fi
+  if [[ "$had_errexit" == "1" ]]; then
+    set -e
+  else
+    set +e
+  fi
 }
 
 ssh_profile_set_var_silent(){
@@ -905,13 +931,16 @@ ssh_check_run_once(){
 ssh_check(){
   # SSH checks are allowed to fail during interactive setup. Never let a failed
   # probe trip the global ERR trap and throw the user back to the shell.
-  local _had_errexit=0
-  case "$-" in *e*) _had_errexit=1; set +e ;; esac
+  local _had_errexit=0 _saved_err_trap=""
+  case "$-" in *e*) _had_errexit=1 ;; esac
+  _saved_err_trap="$(trap -p ERR || true)"
+  set +e
+  trap - ERR
 
   ssh_require_vars
   local req_rc=$?
   if (( req_rc != 0 )); then
-    (( _had_errexit == 1 )) && set -e
+    ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
     return "$req_rc"
   fi
 
@@ -934,8 +963,24 @@ ssh_check(){
   local rc=$?
   if (( rc == 0 )); then
     ssh_check_success_msg
-    (( _had_errexit == 1 )) && set -e
+    ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
     return 0
+  fi
+
+  # If sshpass could not be installed/found, a provided password cannot be tested
+  # non-interactively.  Do not call it a bad password; try the exact kind of
+  # OpenSSH prompt that the operator says works manually.
+  if (( interactive == 1 )) && [[ -n "${OUT_SSH_PASS:-}" ]] && ! command -v sshpass >/dev/null 2>&1; then
+    warn "sshpass is still missing, so AZHDAR cannot inject the saved password automatically."
+    info "Trying a real interactive SSH prompt now. Enter the same server password if prompted."
+    ssh_check_run_once 0
+    rc=$?
+    if (( rc == 0 )); then
+      warn "Interactive SSH worked. Install steps may ask for the SSH password again until sshpass/key auth is available."
+      ssh_check_success_msg
+      ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
+      return 0
+    fi
   fi
 
   # If password-based non-interactive auth failed, do not pretend the port is
@@ -955,7 +1000,7 @@ ssh_check(){
         if (( rc == 0 )); then
           profile_save >/dev/null 2>&1 || true
           ssh_check_success_msg
-          (( _had_errexit == 1 )) && set -e
+          ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
           return 0
         fi
       fi
@@ -979,7 +1024,7 @@ ssh_check(){
           profile_save >/dev/null 2>&1 || true
         fi
         ssh_check_success_msg
-        (( _had_errexit == 1 )) && set -e
+        ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
         return 0
       fi
     else
@@ -999,7 +1044,7 @@ ssh_check(){
           profile_save >/dev/null 2>&1 || true
         fi
         ssh_check_success_msg
-        (( _had_errexit == 1 )) && set -e
+        ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
         return 0
       fi
     fi
@@ -1010,13 +1055,10 @@ ssh_check(){
     direct_is_ssh=1
   fi
 
-  err "SSH failed on port ${OUT_SSH_PORT}."
   if (( direct_is_ssh == 1 )); then
     warn "Port ${OUT_SSH_PORT} is open and speaks SSH. This looks like authentication/host-key handling, not a closed port."
     echo -e "${DIM}Manual test:${RST} ssh -o StrictHostKeyChecking=accept-new -p ${OUT_SSH_PORT} ${OUT_SSH_USER}@${OUT_SSH_HOST}"
-    echo -e "${DIM}Fix:${RST} Use the correct root password, or add/set an SSH identity file, then retry."
-    (( _had_errexit == 1 )) && set -e
-    return 1
+    warn "Trying interactive fallback before failing. If manual SSH works, enter the same password here."
   fi
 
   # If OUT public SSH port changed, try to auto-detect it on the public SSH host.
@@ -1035,7 +1077,7 @@ ssh_check(){
     rc=$?
     if (( rc == 0 )); then
       ssh_check_success_msg
-      (( _had_errexit == 1 )) && set -e
+      ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
       return 0
     fi
   fi
@@ -1056,18 +1098,21 @@ ssh_check(){
     rc=$?
     if (( rc == 0 )); then
       ssh_check_success_msg
-      (( _had_errexit == 1 )) && set -e
+      ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
       return 0
     fi
   fi
 
-  err "SSH failed."
+  err "SSH failed on port ${OUT_SSH_PORT}."
+  if (( direct_is_ssh == 1 )); then
+    echo -e "${DIM}Fix:${RST} If the manual command works, install sshpass or set an SSH identity file so AZHDAR can automate remote steps."
+  fi
   echo -e "${DIM}Quick direct test:${RST} ssh -p ${OUT_SSH_PORT} ${OUT_SSH_USER}@${OUT_SSH_HOST}"
   if [[ -n "$wg" ]]; then
     echo -e "${DIM}Quick WG test:${RST} ssh -p ${OUT_SSH_PORT} ${OUT_SSH_USER}@${wg}"
     echo -e "${DIM}Tip:${RST} If the WG test works while direct public SSH times out, set SSH_MGMT_TRANSPORT=wg or leave it auto."
   fi
-  (( _had_errexit == 1 )) && set -e
+  ssh_restore_probe_state "$_had_errexit" "$_saved_err_trap"
   return 1
 }
 

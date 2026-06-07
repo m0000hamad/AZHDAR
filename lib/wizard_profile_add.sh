@@ -161,20 +161,14 @@ profile_add_wizard(){
   SSH_MGMT_LAST_HOST=""
   SSH_MGMT_LAST_PORT=""
 
-  # if password provided but sshpass missing, try to install
+  # if password provided but sshpass missing, try to install it robustly.
   if [[ -n "${OUT_SSH_PASS:-}" ]] && ! have_cmd sshpass; then
     warn "sshpass not found; installing (for password-based non-interactive SSH)..."
-    local pm; pm="$(detect_pkg_mgr)"
-    case "$pm" in
-      apt)
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y >/dev/null 2>&1 || true
-        apt-get install -y sshpass >/dev/null 2>&1 || true
-        ;;
-      dnf) dnf install -y sshpass >/dev/null 2>&1 || true ;;
-      yum) yum install -y sshpass >/dev/null 2>&1 || true ;;
-      pacman) pacman -Sy --noconfirm sshpass >/dev/null 2>&1 || true ;;
-    esac
+    if ssh_ensure_sshpass_for_password; then
+      ok "sshpass is ready."
+    else
+      warn "sshpass is still missing; AZHDAR will use a real interactive SSH prompt for the preflight instead of calling the password wrong."
+    fi
   fi
 
   # Determine REMOTE_SUDO and suggest a port
