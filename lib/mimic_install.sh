@@ -177,6 +177,109 @@ azhdar_print_apt_failure_log(){
   [[ -s "$log" ]] || return 0
   grep -v -E '^(N: Download is performed unsandboxed as root|User sessions running outdated binaries:|No VM guests are running outdated hypervisor)' "$log" 2>/dev/null | tail -n 80 || tail -n 80 "$log" || true
 }
+
+azhdar_apt_wait_locks_local(){
+  # Avoid false build-deps failures while unattended-upgrades/dpkg is still active.
+  local i p
+  for i in $(seq 1 60); do
+    p=""
+    if have_cmd fuser; then
+      p="$(fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true)"
+    fi
+    [[ -z "$p" ]] && return 0
+    sleep 2
+  done
+  warn "apt/dpkg lock is still busy; trying apt repair anyway."
+  return 0
+}
+
+azhdar_apt_self_heal_local(){
+  # Conservative automatic repair for broken/half-configured apt states.
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
+  azhdar_apt_wait_locks_local || true
+  dpkg --configure -a >/dev/null 2>&1 || true
+  azhdar_apt_get -f install -y >/dev/null 2>&1 || true
+  azhdar_apt_get update -y >/dev/null 2>&1 || true
+  dpkg --configure -a >/dev/null 2>&1 || true
+  azhdar_apt_get -f install -y >/dev/null 2>&1 || true
+}
+
+azhdar_kernel_header_candidates_local(){
+  # Print header meta-packages most likely to match the running Ubuntu/Debian kernel.
+  local kver flavor
+  kver="$(uname -r)"
+  flavor="${kver##*-}"
+  printf '%s
+' "linux-headers-${kver}"
+  case "$kver" in
+    *azure*) printf '%s
+' linux-headers-azure ;;
+    *aws*) printf '%s
+' linux-headers-aws ;;
+    *gcp*) printf '%s
+' linux-headers-gcp ;;
+    *oracle*) printf '%s
+' linux-headers-oracle ;;
+    *kvm*) printf '%s
+' linux-headers-kvm ;;
+    *lowlatency*) printf '%s
+' linux-headers-lowlatency ;;
+    *virtual*) printf '%s
+' linux-headers-virtual ;;
+  esac
+  [[ -n "$flavor" && "$flavor" != "$kver" ]] && printf '%s
+' "linux-headers-${flavor}"
+  printf '%s
+' linux-headers-generic
+}
+
+azhdar_install_mimic_build_deps_local(){
+  # Self-healing build dependency installer for Mimic-DKMS.
+  # Fixes broken dpkg states automatically instead of stopping with a manual
+  # "apt --fix-broken install ; apt full-upgrade" instruction.
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
+  local log="/tmp/azhdar-mimic-build-deps.$$.log"
+  local -a common=(dkms build-essential xz-utils lz4 curl ca-certificates)
+  local hdr
+
+  azhdar_apt_self_heal_local >/dev/null 2>&1 || true
+  if apt_install_retry "${common[@]}" "linux-headers-$(uname -r)" >"$log" 2>&1; then
+    return 0
+  fi
+
+  warn "Build deps/header install failed once; running apt self-heal and trying safe fallbacks."
+  azhdar_apt_self_heal_local >/dev/null 2>&1 || true
+  apt_install_retry "${common[@]}" >>"$log" 2>&1 || true
+
+  for hdr in $(azhdar_kernel_header_candidates_local | awk 'NF && !seen[$0]++'); do
+    if apt_install_retry "$hdr" >>"$log" 2>&1; then
+      break
+    fi
+  done
+
+  if have_cmd dkms && dpkg -s build-essential >/dev/null 2>&1; then
+    if [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
+      warn "Exact running-kernel headers are not available yet; Mimic-DKMS install will still try generic/provider headers. A reboot after kernel upgrade may be needed."
+    fi
+    return 0
+  fi
+
+  warn "apt is still inconsistent; running non-interactive full-upgrade repair, then retrying build deps."
+  azhdar_apt_get -o Dpkg::Options::=--force-confold full-upgrade -y >>"$log" 2>&1 || true
+  azhdar_apt_self_heal_local >>"$log" 2>&1 || true
+  apt_install_retry "${common[@]}" >>"$log" 2>&1 || true
+  for hdr in $(azhdar_kernel_header_candidates_local | awk 'NF && !seen[$0]++'); do
+    apt_install_retry "$hdr" >>"$log" 2>&1 && break || true
+  done
+
+  if have_cmd dkms && dpkg -s build-essential >/dev/null 2>&1; then
+    return 0
+  fi
+
+  err "Cannot auto-repair apt/build deps for Mimic. Last apt output:"
+  azhdar_print_apt_failure_log "$log"
+  return 1
+}
 ensure_cache_dir(){
   mkdir -p "${BASE_DIR}/cache/mimic" 2>/dev/null || true
 }
@@ -250,14 +353,10 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 A
 azhdar_apt_get update -y >/dev/null 2>&1 || true
 
 # Ensure build deps for Mimic-DKMS (dkms + toolchain + matching headers)
-if ! have_cmd dkms || ! dpkg -s build-essential >/dev/null 2>&1; then
-  info "Installing DKMS build deps (dkms, build-essential, headers)..."
+if ! have_cmd dkms || ! dpkg -s build-essential >/dev/null 2>&1 || [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
+  info "Installing/repairing DKMS build deps (dkms, build-essential, headers)..."
 fi
-if ! apt_install_retry dkms build-essential "linux-headers-$(uname -r)"; then
-  err "Failed installing dkms/build-essential/headers. Attempting fix-broken and retry..."
-  azhdar_apt_get -f install -y >/dev/null 2>&1 || true
-  apt_install_retry dkms build-essential "linux-headers-$(uname -r)" ||       apt_install_retry dkms build-essential linux-headers-generic ||       die "Cannot install build deps. Run: apt --fix-broken install ; apt full-upgrade"
-fi
+azhdar_install_mimic_build_deps_local || die "Cannot install/repair Mimic build deps automatically. See ${LOG_FILE}."
 
 apt_install_retry curl ca-certificates linux-tools-common "linux-tools-$(uname -r)" xz-utils lz4 >/dev/null 2>&1 || true
 
@@ -389,18 +488,80 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
 aptq(){ DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 "$@"; }
-aptq update -y >/dev/null 2>&1 || true
-if ! command -v dkms >/dev/null 2>&1; then
-  echo "[i] Installing DKMS build deps (dkms, build-essential, headers)..."
-fi
-if ! aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates >/dev/null 2>&1; then
+apt_wait_locks(){
+  i=0
+  while [ "$i" -lt 60 ]; do
+    if command -v fuser >/dev/null 2>&1; then
+      busy="$(fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true)"
+      [ -z "$busy" ] && return 0
+    else
+      return 0
+    fi
+    i=$((i+1)); sleep 2
+  done
+  return 0
+}
+apt_repair(){
+  apt_wait_locks || true
+  dpkg --configure -a >/dev/null 2>&1 || true
   aptq -f install -y >/dev/null 2>&1 || true
+  aptq update -y >/dev/null 2>&1 || true
+  dpkg --configure -a >/dev/null 2>&1 || true
+  aptq -f install -y >/dev/null 2>&1 || true
+}
+header_candidates(){
+  kver="$(uname -r)"; flavor="${kver##*-}"
+  printf '%s
+' "linux-headers-${kver}"
+  case "$kver" in
+    *azure*) printf '%s
+' linux-headers-azure ;;
+    *aws*) printf '%s
+' linux-headers-aws ;;
+    *gcp*) printf '%s
+' linux-headers-gcp ;;
+    *oracle*) printf '%s
+' linux-headers-oracle ;;
+    *kvm*) printf '%s
+' linux-headers-kvm ;;
+    *lowlatency*) printf '%s
+' linux-headers-lowlatency ;;
+    *virtual*) printf '%s
+' linux-headers-virtual ;;
+  esac
+  [ -n "$flavor" ] && [ "$flavor" != "$kver" ] && printf '%s
+' "linux-headers-${flavor}"
+  printf '%s
+' linux-headers-generic
+}
+install_build_deps(){
+  apt_repair || true
+  if aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates "linux-headers-$(uname -r)" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[i] Remote apt build deps failed once; running self-heal and header fallback..."
+  apt_repair || true
   aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates >/dev/null 2>&1 || true
+  for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
+    aptq install -y "$hdr" >/dev/null 2>&1 && break || true
+  done
+  if command -v dkms >/dev/null 2>&1 && dpkg -s build-essential >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "[i] Remote apt is still inconsistent; running non-interactive full-upgrade repair..."
+  aptq -o Dpkg::Options::=--force-confold full-upgrade -y >/dev/null 2>&1 || true
+  apt_repair || true
+  aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates >/dev/null 2>&1 || true
+  for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
+    aptq install -y "$hdr" >/dev/null 2>&1 && break || true
+  done
+  command -v dkms >/dev/null 2>&1 && dpkg -s build-essential >/dev/null 2>&1
+}
+aptq update -y >/dev/null 2>&1 || true
+if ! command -v dkms >/dev/null 2>&1 || ! dpkg -s build-essential >/dev/null 2>&1; then
+  echo "[i] Installing/repairing DKMS build deps (dkms, build-essential, headers)..."
 fi
-if ! aptq install -y "linux-headers-$(uname -r)" >/dev/null 2>&1; then
-  aptq -f install -y >/dev/null 2>&1 || true
-  aptq install -y "linux-headers-$(uname -r)" >/dev/null 2>&1 || aptq install -y linux-headers-generic >/dev/null 2>&1 || true
-fi
+install_build_deps || { echo "BUILD_DEPS_FAILED"; exit 13; }
 
 codename="${CODENAME:-}"
 
