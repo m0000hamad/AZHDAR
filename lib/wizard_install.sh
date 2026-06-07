@@ -679,7 +679,12 @@ fi
 
   # Write configs
   if ( write_mimic_conf_remote ); then
-    REMOTE_WAN_IF="$(remote_detect_wan_if_quiet 2>/dev/null || true)"
+    # write_mimic_conf_remote already returns the exact remote interface that
+    # received /etc/mimic/<if>.conf. Do NOT overwrite it with a later generic
+    # route-detect result; on some providers the route probe returns eth0 while
+    # the generated Mimic config/unit belongs to ens18/ens3, causing remote
+    # mimic@eth0 failures and a dead tunnel.
+    [[ -n "${REMOTE_WAN_IF:-}" ]] && profile_save >/dev/null 2>&1 || true
     ok "RESULT: OUT/remote Mimic config written."
   else
     err "RESULT: OUT/remote Mimic config FAILED. Install stopped before service restart."

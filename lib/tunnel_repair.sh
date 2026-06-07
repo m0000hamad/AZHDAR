@@ -73,14 +73,14 @@ _tunnel_repair_validate_profile(){
 _tunnel_repair_health_quiet(){
   [[ -n "${PROFILE:-}" ]] || return 1
   local wgsvc; wgsvc="$(svc_wg)"
-  systemctl is-active --quiet "$wgsvc" 2>/dev/null || return 1
-  ip link show "${WG_IF}" >/dev/null 2>&1 || return 1
 
-  local hs now
-  hs="$(wg_handshake_epoch 2>/dev/null || echo 0)"
-  now="$(date +%s 2>/dev/null || echo 0)"
-  if [[ "$hs" =~ ^[0-9]+$ && "$hs" != "0" && "$now" =~ ^[0-9]+$ ]]; then
-    (( now - hs <= 240 )) && return 0 || true
+  # A recent WG handshake only proves that some encrypted packets crossed the
+  # transport. It does NOT prove the tunnel IP path is usable. In 3.2.24 the
+  # repair flow could print "Tunnel repair succeeded" based only on handshake
+  # while both tunnel pings were still 100% packet-loss. Treat handshake as
+  # diagnostic info only; repair success requires a real tunnel ping.
+  if ! systemctl is-active --quiet "$wgsvc" 2>/dev/null && ! ip link show "${WG_IF}" >/dev/null 2>&1; then
+    return 1
   fi
 
   if [[ "${ENABLE_TUN_IPV4:-1}" == "1" && -n "${OUT_WG_IP:-}" && "${OUT_WG_IP}" != "peer" ]]; then
@@ -88,6 +88,15 @@ _tunnel_repair_health_quiet(){
   fi
   if [[ "${ENABLE_TUN_IPV6:-0}" == "1" && -n "${OUT_WG_IP6:-}" && "${OUT_WG_IP6}" != "peer" ]]; then
     ping6_local_once "${OUT_WG_IP6}" && return 0 || true
+  fi
+  # If SSH is available, also accept a successful reverse ping from OUT to IR.
+  if [[ "${WG_MODE:-classic}" != "account" ]] && [[ -n "${OUT_SSH_HOST:-}" ]] && ssh_run "echo OK" >/dev/null 2>&1; then
+    if [[ "${ENABLE_TUN_IPV4:-1}" == "1" && -n "${IR_WG_IP:-}" && "${IR_WG_IP}" != "peer" ]]; then
+      ping4_remote_once "${IR_WG_IP}" && return 0 || true
+    fi
+    if [[ "${ENABLE_TUN_IPV6:-0}" == "1" && -n "${IR_WG_IP6:-}" && "${IR_WG_IP6}" != "peer" ]]; then
+      ping6_remote_once "${IR_WG_IP6}" && return 0 || true
+    fi
   fi
   return 1
 }

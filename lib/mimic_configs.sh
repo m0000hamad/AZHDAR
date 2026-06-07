@@ -422,25 +422,34 @@ mimic_remote_restart_checked(){
   local rif="${1:-}"
   [[ -n "$rif" ]] || rif="${REMOTE_WAN_IF:-}"
   [[ -n "$rif" ]] || rif="$(remote_detect_wan_if_quiet 2>/dev/null || true)"
-  [[ -n "$rif" ]] || { warn "Remote interface not detected for Mimic restart."; return 1; }
-  REMOTE_WAN_IF="$rif"
-  local qrif
-  qrif="$(printf '%q' "$rif")"
-  ssh_run_stdin_env_root_best_effort "REMOTE_WAN_IF=${rif}" <<'REMOTE'
+
+  local out rc okif
+  out="$(ssh_run_stdin_env_root_best_effort "REMOTE_WAN_IF=${rif}" <<'REMOTE'
 set -u
-WAN_IF="${REMOTE_WAN_IF:-}"
-[ -n "$WAN_IF" ] || { echo "ERR:NO_REMOTE_IF"; exit 1; }
-CFG="/etc/mimic/${WAN_IF}.conf"
-[ -f "$CFG" ] || { echo "ERR:NO_REMOTE_MIMIC_CONF:$CFG"; exit 1; }
-if grep -Eq '^[[:space:]]*xdp_mode[[:space:]]*=' "$CFG" 2>/dev/null; then
-  sed -i -E 's/^[[:space:]]*xdp_mode[[:space:]]*=.*/xdp_mode = skb/' "$CFG" 2>/dev/null || true
-else
-  awk 'BEGIN{done=0} {print; if(!done && $0 ~ /^log\.verbosity[[:space:]]*=/){print "xdp_mode = skb"; done=1}} END{if(!done) print "xdp_mode = skb"}' "$CFG" >"${CFG}.tmp.$$" 2>/dev/null && mv -f "${CFG}.tmp.$$" "$CFG" || true
-fi
-chmod 644 "$CFG" 2>/dev/null || true
-# Repair missing systemd template. Some partial installs leave /usr/sbin/mimic
-# available but no mimic@.service, so systemctl reports the unit as not-found
-# and the real tunnel never starts.
+REQ_IF="${REMOTE_WAN_IF:-}"
+
+cmd_timeout(){
+  secs="${1:-20}"; shift || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --foreground --kill-after=3s "${secs}s" "$@"
+  else
+    "$@"
+  fi
+}
+systemctl_quick(){
+  secs="${1:-20}"; shift || return 1
+  cmd_timeout "$secs" systemctl "$@"
+}
+add_unique(){
+  v="$1"
+  [ -n "$v" ] || return 0
+  [ "$v" = "lo" ] && return 0
+  case " $CANDS " in *" $v "*) return 0;; esac
+  CANDS="$CANDS $v"
+}
+detect_default_if(){
+  ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}' || true
+}
 ensure_mimic_unit(){
   if ! command -v systemctl >/dev/null 2>&1; then return 0; fi
   if systemctl cat mimic@.service >/dev/null 2>&1 || [ -f /etc/systemd/system/mimic@.service ] || [ -f /usr/lib/systemd/system/mimic@.service ] || [ -f /lib/systemd/system/mimic@.service ]; then
@@ -448,7 +457,7 @@ ensure_mimic_unit(){
   fi
   exe="$(command -v mimic 2>/dev/null || true)"
   [ -n "$exe" ] || exe="/usr/sbin/mimic"
-  [ -x "$exe" ] || return 1
+  [ -x "$exe" ] || { echo "ERR:REMOTE_MIMIC_BINARY_NOT_FOUND:${exe}"; return 1; }
   mkdir -p /etc/systemd/system /etc/mimic /run/mimic /var/lib/mimic 2>/dev/null || true
   cat >/etc/systemd/system/mimic@.service <<EOF_UNIT
 [Unit]
@@ -469,123 +478,123 @@ EOF_UNIT
   chmod 644 /etc/systemd/system/mimic@.service 2>/dev/null || true
   systemctl daemon-reload >/dev/null 2>&1 || true
 }
-ensure_mimic_unit || true
-# Repair missing service account before start; fixes status=217/USER after partial/old Mimic installs.
-unit="$(systemctl cat mimic@.service 2>/dev/null || cat /etc/systemd/system/mimic@.service /usr/lib/systemd/system/mimic@.service /lib/systemd/system/mimic@.service 2>/dev/null || true)"
-if [ -n "$unit" ]; then
-  u="$(printf '%s
-' "$unit" | awk -F= '/^[[:space:]]*User[[:space:]]*=/{v=$2; sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v); if(v!="") last=v} END{print last}' | tail -n1)"
-  g="$(printf '%s
-' "$unit" | awk -F= '/^[[:space:]]*Group[[:space:]]*=/{v=$2; sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v); if(v!="") last=v} END{print last}' | tail -n1)"
-  case "$u" in ""|root|*%*|*\$*|*/*|*:*) :;; *)
-    case "$g" in ""|*%*|*\$*|*/*|*:*) g="$u";; esac
-    getent group "$g" >/dev/null 2>&1 || groupadd --system "$g" >/dev/null 2>&1 || true
-    getent passwd "$u" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /var/lib/mimic --shell /usr/sbin/nologin --gid "$g" "$u" >/dev/null 2>&1 || true
-    mkdir -p /var/lib/mimic /run/mimic /etc/mimic 2>/dev/null || true
-    chown "$u:$g" /var/lib/mimic /run/mimic 2>/dev/null || true
-    chmod 755 /var/lib/mimic /run/mimic /etc/mimic 2>/dev/null || true
-  esac
-fi
-cmd_timeout(){
-  secs="${1:-60}"; shift || return 1
-  if command -v timeout >/dev/null 2>&1; then
-    timeout --foreground --kill-after=5s "${secs}s" "$@"
+repair_service_user(){
+  unit="$(systemctl cat mimic@.service 2>/dev/null || cat /etc/systemd/system/mimic@.service /usr/lib/systemd/system/mimic@.service /lib/systemd/system/mimic@.service 2>/dev/null || true)"
+  [ -n "$unit" ] || return 0
+  u="$(printf '%s\n' "$unit" | awk -F= '/^[[:space:]]*User[[:space:]]*=/{v=$2; sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v); if(v!="") last=v} END{print last}' | tail -n1)"
+  g="$(printf '%s\n' "$unit" | awk -F= '/^[[:space:]]*Group[[:space:]]*=/{v=$2; sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v); if(v!="") last=v} END{print last}' | tail -n1)"
+  case "$u" in ""|root|*%*|*\$*|*/*|*:*) return 0;; esac
+  case "$g" in ""|*%*|*\$*|*/*|*:*) g="$u";; esac
+  getent group "$g" >/dev/null 2>&1 || groupadd --system "$g" >/dev/null 2>&1 || true
+  getent passwd "$u" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /var/lib/mimic --shell /usr/sbin/nologin --gid "$g" "$u" >/dev/null 2>&1 || true
+  mkdir -p /var/lib/mimic /run/mimic /etc/mimic 2>/dev/null || true
+  chown "$u:$g" /var/lib/mimic /run/mimic 2>/dev/null || true
+  chmod 755 /var/lib/mimic /run/mimic /etc/mimic 2>/dev/null || true
+}
+force_skb(){
+  cfg="$1"
+  [ -f "$cfg" ] || return 1
+  if grep -Eq '^[[:space:]]*xdp_mode[[:space:]]*=' "$cfg" 2>/dev/null; then
+    sed -i -E 's/^[[:space:]]*xdp_mode[[:space:]]*=.*/xdp_mode = skb/' "$cfg" 2>/dev/null || true
   else
-    "$@"
+    awk 'BEGIN{done=0} {print; if(!done && $0 ~ /^log\.verbosity[[:space:]]*=/){print "xdp_mode = skb"; done=1}} END{if(!done) print "xdp_mode = skb"}' "$cfg" >"${cfg}.tmp.$$" 2>/dev/null && mv -f "${cfg}.tmp.$$" "$cfg" || true
   fi
+  chmod 644 "$cfg" 2>/dev/null || true
 }
-systemctl_quick(){
-  secs="${1:-25}"; shift || return 1
-  cmd_timeout "$secs" systemctl "$@"
-}
-clear_mimic_runtime(){
-  systemctl stop "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-  systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
+clear_runtime(){
+  w="$1"
+  systemctl stop "mimic@${w}" >/dev/null 2>&1 || true
+  systemctl reset-failed "mimic@${w}" >/dev/null 2>&1 || true
   if command -v pkill >/dev/null 2>&1; then
-    pkill -TERM -f "(^|[ /])mimic([ ]+run)?[ ]+${WAN_IF}([ ]|$)" >/dev/null 2>&1 || true
-    sleep 0.3
-    pkill -KILL -f "(^|[ /])mimic([ ]+run)?[ ]+${WAN_IF}([ ]|$)" >/dev/null 2>&1 || true
+    pkill -TERM -f "(^|[ /])mimic([ ]+run)?[ ]+${w}([ ]|$)" >/dev/null 2>&1 || true
+    sleep 0.2
+    pkill -KILL -f "(^|[ /])mimic([ ]+run)?[ ]+${w}([ ]|$)" >/dev/null 2>&1 || true
   fi
   mkdir -p /run/mimic /var/lib/mimic 2>/dev/null || true
   find /run/mimic -maxdepth 1 -type f -name '*.lock' -delete 2>/dev/null || true
   find /run/mimic -maxdepth 1 -type s -delete 2>/dev/null || true
 }
 mimic_kallsyms_has_hook(){ grep -qw 'mimic_change_csum_offset' /proc/kallsyms 2>/dev/null; }
-install_btf_tools(){
-  if command -v apt-get >/dev/null 2>&1; then
-    export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
-    cmd_timeout 45 apt-get update -y >/dev/null 2>&1 || true
-    cmd_timeout 90 apt-get install -y pahole dwarves bpftool linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic >/dev/null 2>&1 ||       cmd_timeout 60 apt-get install -y pahole dwarves bpftool >/dev/null 2>&1 ||       cmd_timeout 45 apt-get install -y pahole dwarves >/dev/null 2>&1 || true
-  fi
-}
-dkms_versions(){
-  if [ -d /var/lib/dkms/mimic ]; then find /var/lib/dkms/mimic -mindepth 1 -maxdepth 1 -type d -printf '%f
-' 2>/dev/null || true; fi
-  dkms status 2>/dev/null | awk -F'[,/]' '/^mimic\//{print $2}' | awk 'NF && !seen[$0]++' || true
-}
-rebuild_mimic_module(){
+ensure_mimic_module_light(){
+  modprobe mimic >/dev/null 2>&1 && return 0
   command -v dkms >/dev/null 2>&1 || return 1
-  kver="$(uname -r)"; seen=""
-  install_btf_tools || true
-  cmd_timeout 15 modprobe -r mimic >/dev/null 2>&1 || true
-  while read -r ver; do
-    [ -n "$ver" ] || continue
-    case " $seen " in *" $ver "*) continue;; esac
-    seen="$seen $ver"
-    cmd_timeout 45 dkms remove -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
-    cmd_timeout 120 dkms build  -m mimic -v "$ver" -k "$kver" >/dev/null 2>&1 || true
-    cmd_timeout 60 dkms install -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
-  done <<EOF_DKMS
-$(dkms_versions)
-EOF_DKMS
-  if [ -z "$(printf '%s' "$seen" | tr -d ' ')" ] && dpkg -s mimic-dkms >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y mimic-dkms >/dev/null 2>&1 || true
-  fi
-  cmd_timeout 90 dkms autoinstall -k "$kver" >/dev/null 2>&1 || cmd_timeout 90 dkms autoinstall >/dev/null 2>&1 || true
-  cmd_timeout 30 depmod -a >/dev/null 2>&1 || true
-  cmd_timeout 15 modprobe mimic >/dev/null 2>&1 || return 1
+  kver="$(uname -r)"
+  cmd_timeout 60 dkms autoinstall -k "$kver" >/dev/null 2>&1 || true
+  cmd_timeout 20 depmod -a >/dev/null 2>&1 || true
+  modprobe mimic >/dev/null 2>&1
 }
-ensure_mimic_module(){
-  if modprobe mimic >/dev/null 2>&1 && mimic_kallsyms_has_hook; then return 0; fi
-  rebuild_mimic_module >/dev/null 2>&1 || true
-  if modprobe mimic >/dev/null 2>&1 && mimic_kallsyms_has_hook; then return 0; fi
+try_start(){
+  w="$1"
+  cfg="/etc/mimic/${w}.conf"
+  [ -f "$cfg" ] || { echo "WARN:NO_REMOTE_MIMIC_CONF:${w}:${cfg}"; return 2; }
+  force_skb "$cfg" || true
+  ensure_mimic_unit || true
+  repair_service_user || true
+  clear_runtime "$w" || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl_quick 10 enable "mimic@${w}" >/dev/null 2>&1 || true
+  if systemctl_quick 18 restart "mimic@${w}" >/dev/null 2>&1 && systemctl is-active --quiet "mimic@${w}" 2>/dev/null; then
+    echo "OK:REMOTE_MIMIC:${w}"
+    return 0
+  fi
+  echo "WARN:REMOTE_MIMIC_START_FAILED:${w}"
+  systemctl status "mimic@${w}" --no-pager -l 2>/dev/null | sed -n '1,35p' || true
+  journalctl -u "mimic@${w}" -n 35 --no-pager -l 2>/dev/null || true
+  # If systemd has no useful journal, run mimic once in foreground to expose
+  # the real reason (bad interface/config/module) instead of just "-- No entries --".
+  exe="$(command -v mimic 2>/dev/null || echo /usr/sbin/mimic)"
+  if [ -x "$exe" ]; then
+    echo "-- mimic foreground probe (${w}) --"
+    cmd_timeout 8 "$exe" run "$w" -F "$cfg" 2>&1 | sed -n '1,45p' || true
+  fi
+  clear_runtime "$w" || true
   return 1
 }
-systemctl daemon-reload >/dev/null 2>&1 || true
-ensure_mimic_module || true
-clear_mimic_runtime || true
-systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-systemctl_quick 15 enable "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-if systemctl_quick 25 restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
-  echo "OK:REMOTE_MIMIC:${WAN_IF}"
-  exit 0
+
+CANDS=""
+add_unique "$REQ_IF"
+add_unique "$(detect_default_if)"
+if [ -d /etc/mimic ]; then
+  for f in /etc/mimic/*.conf; do [ -f "$f" ] && add_unique "$(basename "$f" .conf)"; done
 fi
-echo "WARN:REMOTE_MIMIC_RETRY:${WAN_IF}"
-ensure_mimic_module || true
-clear_mimic_runtime || true
-systemctl daemon-reload >/dev/null 2>&1 || true
-systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-if systemctl_quick 25 restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
-  echo "OK:REMOTE_MIMIC:${WAN_IF}:recovered"
-  exit 0
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl list-units --all 'mimic@*.service' --no-legend --plain 2>/dev/null | awk '{print $1}' | sed -n 's/^mimic@\(.*\)\.service$/\1/p' | while read -r u; do [ -n "$u" ] && echo "$u"; done >/tmp/azhdar-mimic-units.$$ 2>/dev/null || true
+  while read -r u; do add_unique "$u"; done </tmp/azhdar-mimic-units.$$ 2>/dev/null || true
+  rm -f /tmp/azhdar-mimic-units.$$ 2>/dev/null || true
 fi
-echo "WARN:REMOTE_MIMIC_DEEP_REPAIR:${WAN_IF}"
-clear_mimic_runtime || true
-rebuild_mimic_module >/dev/null 2>&1 || true
-clear_mimic_runtime || true
-systemctl daemon-reload >/dev/null 2>&1 || true
-systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-if systemctl_quick 25 restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
-  echo "OK:REMOTE_MIMIC:${WAN_IF}:dkms-btf-recovered"
-  exit 0
+[ -n "$CANDS" ] || { echo "ERR:NO_REMOTE_MIMIC_CANDIDATES"; exit 1; }
+
+echo "INFO:REMOTE_MIMIC_CANDIDATES:${CANDS# }"
+for c in $CANDS; do
+  try_start "$c" && exit 0
+  echo "INFO:REMOTE_MIMIC_NEXT_CANDIDATE"
+done
+
+echo "WARN:REMOTE_MIMIC_MODULE_REPAIR"
+ensure_mimic_module_light || true
+# If the module loaded but lacks the expected helper symbol, surface that too.
+if modprobe mimic >/dev/null 2>&1 && ! mimic_kallsyms_has_hook; then
+  echo "WARN:REMOTE_MIMIC_MODULE_LOADED_BUT_HOOK_MISSING:mimic_change_csum_offset"
 fi
-echo "ERR:REMOTE_MIMIC_FAILED:${WAN_IF}"
-systemctl status "mimic@${WAN_IF}" --no-pager -l 2>/dev/null | sed -n '1,80p' || true
-journalctl -u "mimic@${WAN_IF}" -n 80 --no-pager -l 2>/dev/null || true
+for c in $CANDS; do
+  try_start "$c" && exit 0
+  echo "INFO:REMOTE_MIMIC_NEXT_CANDIDATE_AFTER_MODULE_REPAIR"
+done
+
+echo "ERR:REMOTE_MIMIC_FAILED:${REQ_IF:-unknown}"
 exit 1
 REMOTE
+)"
+  rc=$?
+  printf '%s\n' "$out"
+  okif="$(printf '%s\n' "$out" | sed -n 's/^OK:REMOTE_MIMIC:\([^:]*\).*/\1/p' | tail -n1 | tr -d '\r')"
+  if [[ -n "$okif" ]]; then
+    REMOTE_WAN_IF="$okif"
+    profile_save >/dev/null 2>&1 || true
+    return 0
+  fi
+  return 1
 }
-
 
 mimic_local_conf_path(){
   local wan; wan="$(mimic_detect_local_if 2>/dev/null || true)"
