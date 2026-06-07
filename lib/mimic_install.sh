@@ -559,14 +559,16 @@ fi
 
 install_mimic_remote(){
   step "Install Mimic on OUT (remote)"
-  if ssh_run "command -v mimic >/dev/null 2>&1 && dpkg-query -W -f='\${Status}' mimic 2>/dev/null | grep -qx 'install ok installed' && dpkg-query -W -f='\${Status}' mimic-dkms 2>/dev/null | grep -qx 'install ok installed' && modinfo mimic >/dev/null 2>&1 && echo yes || echo no" | tail -n1 | grep -qx yes; then
+
+  # Be intentionally permissive here.  Recent strict checks (dpkg status +
+  # modinfo before continuing) made installs worse on fresh/rebuilt hosts where
+  # apt/dpkg is temporarily inconsistent, while Mimic can still be installed or
+  # already usable.  The real gate for a working tunnel is the later service +
+  # ping check, not whether apt build-deps printed a transient warning here.
+  if ssh_run "command -v mimic >/dev/null 2>&1 && echo yes || echo no" | tail -n1 | grep -qx yes; then
     azhdar_mimic_ensure_service_user_remote || true
-    ok "Mimic already installed (remote); package/module checked."
+    ok "Mimic already installed (remote)."
     return 0
-  fi
-  if ssh_run "command -v mimic >/dev/null 2>&1 && echo broken || true" | tail -n1 | grep -qx broken; then
-    warn "Remote Mimic install is broken or half-configured; purging it before reinstalling stable Mimic ${AZHDAR_MIMIC_VERSION_PIN}."
-    ssh_run "systemctl stop 'mimic@*' >/dev/null 2>&1 || true; pkill -TERM -f mimic >/dev/null 2>&1 || true; sleep 0.5; pkill -KILL -f mimic >/dev/null 2>&1 || true; rm -f /run/mimic/*.lock /var/crash/mimic-dkms*.crash 2>/dev/null || true; DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 purge -y mimic mimic-dkms >/dev/null 2>&1 || true; dpkg --remove --force-remove-reinstreq mimic mimic-dkms >/dev/null 2>&1 || true; rm -rf /var/lib/dkms/mimic 2>/dev/null || true" >/dev/null 2>&1 || true
   fi
 
   # Detect remote codename + arch (best-effort)
@@ -584,12 +586,10 @@ install_mimic_remote(){
   codename="${codename,,}"
   os_id="${os_id,,}"
 
-  # Robust arch normalization (guards against malformed outputs like x86_64ID)
   if [[ "$arch" == *"x86_64"* || "$arch" == *"amd64"* ]]; then
     arch="x86_64"
   fi
 
-  # Fallback codename mapping when CODENAME is missing.
   if [[ -z "${codename:-}" ]]; then
     case "${os_id}:${os_ver}" in
       debian:13*|debian:13.*) codename="trixie" ;;
@@ -606,30 +606,24 @@ install_mimic_remote(){
   [[ "$arch" == "x86_64" ]] || die "Remote architecture '${arch}' is not amd64/x86_64; Mimic packages are amd64-only."
   [[ -n "${codename:-}" ]] || die "Cannot detect remote OS codename."
 
-  # Mirror fallbacks for remote install (used when GitHub is blocked).
-  # Resolve dynamically from the File Browser share, so exact version filenames do not matter.
   local fb1="" fb2=""
   fb1="$(mimic_static_mirror_asset_url "$codename" mimic 2>/dev/null || mimic_mirror_asset_url "$codename" mimic 2>/dev/null || true)"
   fb2="$(mimic_static_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || mimic_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || true)"
 
-local okcod
-okcod="$(mimic_supported_codename "$codename" || true)"
-if [[ "$okcod" == "no" ]]; then
-  if [[ -n "$fb1" && -n "$fb2" ]]; then
-    warn "Mimic GitHub assets not found for remote codename='${codename}', but ${ASSET_MIRROR_NAME:-m0000hamad} mirror is configured; continuing with mirror (best-effort)."
-  else
-    die "Mimic release assets not found for remote codename='${codename}'. Use Debian 12 (bookworm) / Ubuntu 24.04 (noble) or newer."
+  local okcod
+  okcod="$(mimic_supported_codename "$codename" || true)"
+  if [[ "$okcod" == "no" ]]; then
+    if [[ -n "$fb1" && -n "$fb2" ]]; then
+      warn "Mimic GitHub assets not found for remote codename='${codename}', but ${ASSET_MIRROR_NAME:-m0000hamad} mirror is configured; continuing with mirror (best-effort)."
+    else
+      die "Mimic release assets not found for remote codename='${codename}'. Use Debian 12 (bookworm) / Ubuntu 24.04 (noble) or newer."
+    fi
   fi
-fi
 
-  # Run the remote installer in a captured, non-errexit block. A failed
-  # remote attempt is recoverable here (we may still find a healthy Mimic
-  # package/module after apt fallbacks), so do not let the global ERR trap
-  # print a misleading "Fatal" before we inspect the final state.
   local remote_out="" remote_rc=0 _azhdar_had_errexit=0
   [[ $- == *e* ]] && _azhdar_had_errexit=1 && set +e
-  remote_out="$(ssh_run_stdin_env_root "CODENAME=${codename}" "MIMIC_FB_DEB=${fb1}" "MIMIC_FB_DKMS=${fb2}" "ASSET_MIRROR_NAME=${ASSET_MIRROR_NAME:-m0000hamad}" <<'REMOTE'
-set -euo pipefail
+  remote_out="$(ssh_run_stdin_env_root_best_effort "CODENAME=${codename}" "MIMIC_FB_DEB=${fb1}" "MIMIC_FB_DKMS=${fb2}" "ASSET_MIRROR_NAME=${ASSET_MIRROR_NAME:-m0000hamad}" <<'REMOTE'
+set -uo pipefail
 
 if ! command -v apt-get >/dev/null 2>&1; then
   echo "NO_APT"
@@ -637,135 +631,32 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
-apt_force_unlock(){
-  locks="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock"
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service >/dev/null 2>&1 || true
-    systemctl stop unattended-upgrades.service packagekit.service >/dev/null 2>&1 || true
-  fi
-  pids=""
-  if command -v fuser >/dev/null 2>&1; then
-    pids="$(fuser $locks 2>/dev/null | tr ' ' '\n' | awk 'NF && !seen[$0]++' || true)"
-  fi
-  if command -v pgrep >/dev/null 2>&1; then
-    for name in apt apt-get apt.systemd.daily aptitude dpkg unattended-upgrade unattended-upgrades packagekitd; do
-      pids="${pids}
-$(pgrep -x "$name" 2>/dev/null || true)"
-    done
-  fi
-  pids="$(printf '%s\n' "$pids" | awk -v self="$$" 'NF && $1 != self && !seen[$0]++')"
-  if [ -n "$pids" ]; then
-    echo "[i] Aggressive apt repair: killing stuck apt/dpkg/unattended-upgrades processes..." >&2
-    for pid in $pids; do kill "$pid" >/dev/null 2>&1 || true; done
-    sleep 1
-    for pid in $pids; do kill -9 "$pid" >/dev/null 2>&1 || true; done
-    sleep 1
-  fi
-  rm -f $locks >/dev/null 2>&1 || true
-  mkdir -p /var/lib/dpkg /var/cache/apt/archives/partial /var/lib/apt/lists/partial >/dev/null 2>&1 || true
-}
-policy_begin(){
-  path="/usr/sbin/policy-rc.d"; bak="/usr/sbin/policy-rc.d.azhdar-bak"
-  mkdir -p /usr/sbin 2>/dev/null || true
-  if [ -e "$path" ] && [ ! -e "$bak" ]; then cp -a "$path" "$bak" 2>/dev/null || true; fi
-  cat >"$path" <<'EOF' 2>/dev/null || true
-#!/bin/sh
-exit 101
-EOF
-  chmod +x "$path" 2>/dev/null || true
-}
-policy_end(){
-  path="/usr/sbin/policy-rc.d"; bak="/usr/sbin/policy-rc.d.azhdar-bak"
-  if [ -e "$bak" ]; then mv -f "$bak" "$path" 2>/dev/null || true; else rm -f "$path" 2>/dev/null || true; fi
-}
-aptq(){ apt_force_unlock >/dev/null 2>&1 || true; policy_begin >/dev/null 2>&1 || true; DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 "$@"; rc=$?; policy_end >/dev/null 2>&1 || true; return "$rc"; }
-apt_wait_locks(){ apt_force_unlock || true; return 0; }
-apt_repair(){
-  apt_force_unlock || true
-  apt_wait_locks || true
-  dpkg --configure -a >/dev/null 2>&1 || true
-  aptq -f install -y >/dev/null 2>&1 || true
-  dpkg --configure -a >/dev/null 2>&1 || true
-  aptq -f install -y >/dev/null 2>&1 || true
-}
-header_candidates(){
-  kver="$(uname -r)"; flavor="${kver##*-}"
-  printf '%s
-' "linux-headers-${kver}"
-  case "$kver" in
-    *azure*) printf '%s
-' linux-headers-azure ;;
-    *aws*) printf '%s
-' linux-headers-aws ;;
-    *gcp*) printf '%s
-' linux-headers-gcp ;;
-    *oracle*) printf '%s
-' linux-headers-oracle ;;
-    *kvm*) printf '%s
-' linux-headers-kvm ;;
-    *lowlatency*) printf '%s
-' linux-headers-lowlatency ;;
-    *virtual*) printf '%s
-' linux-headers-virtual ;;
-  esac
-  [ -n "$flavor" ] && [ "$flavor" != "$kver" ] && printf '%s
-' "linux-headers-${flavor}"
-  printf '%s
-' linux-headers-generic
-}
-install_build_deps(){
-  apt_repair || true
-  if aptq install --no-install-recommends -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool "linux-headers-$(uname -r)" >/dev/null 2>&1; then
-    return 0
-  fi
-  echo "[i] Remote apt build deps failed once; refreshing package list once and trying header fallback..."
-  aptq update -y >/dev/null 2>&1 || true
-  apt_repair || true
-  aptq install --no-install-recommends -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
-  for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
-    aptq install --no-install-recommends -y "$hdr" >/dev/null 2>&1 && break || true
-  done
-  if command -v dkms >/dev/null 2>&1 && dpkg -s build-essential >/dev/null 2>&1; then
-    return 0
-  fi
-  echo "[i] Remote apt is still inconsistent; avoiding full-upgrade during AZHDAR install and retrying only required build deps..."
-  apt_repair || true
-  aptq install --no-install-recommends -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
-  for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
-    aptq install --no-install-recommends -y "$hdr" >/dev/null 2>&1 && break || true
-  done
-  command -v dkms >/dev/null 2>&1 && dpkg -s build-essential >/dev/null 2>&1
-}
-# No unconditional remote apt update; install_build_deps refreshes only after a real failure.
+aptq(){ DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 "$@"; }
+
+# Keep this stage light and non-blocking.  apt/dpkg on new Ubuntu images often
+# runs unattended-upgrade for several minutes.  Try the required deps, but do
+# not abort here; package install + later service checks decide the real result.
 if ! command -v dkms >/dev/null 2>&1 || ! dpkg -s build-essential >/dev/null 2>&1; then
-  echo "[i] Installing/repairing DKMS build deps (dkms, build-essential, headers)..."
+  echo "[i] Installing DKMS build deps (best-effort; non-fatal)..."
 fi
-install_build_deps || { echo "BUILD_DEPS_FAILED"; exit 13; }
+aptq update -y >/dev/null 2>&1 || true
+aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
+aptq install -y "linux-headers-$(uname -r)" >/dev/null 2>&1 || aptq install -y linux-headers-generic >/dev/null 2>&1 || true
+aptq -f install -y >/dev/null 2>&1 || true
 
 codename="${CODENAME:-}"
-
-# If CODENAME wasn't passed, try to detect it on the remote side.
 if [ -z "$codename" ] && [ -r /etc/os-release ]; then
-  # shellcheck disable=SC1091
   . /etc/os-release 2>/dev/null || true
   codename="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
-  if [ -z "$codename" ] && [ -n "${VERSION:-}" ]; then
-    tmp="${VERSION#*(}"; tmp="${tmp%%)*}"
-    if [ -n "$tmp" ] && [ "$tmp" != "$VERSION" ]; then
-      codename="${tmp%% *}"
-    fi
-  fi
 fi
 if [ -z "$codename" ] && command -v lsb_release >/dev/null 2>&1; then
   codename="$(lsb_release -cs 2>/dev/null || true)"
 fi
-
 codename="$(printf "%s" "$codename" | tr 'A-Z' 'a-z')"
 [ -n "$codename" ] || { echo "NO_CODENAME"; exit 5; }
 
 tmp="/tmp/mimic-install.$$"
 rm -rf "$tmp"; mkdir -p "$tmp"; chmod 755 "$tmp" 2>/dev/null || true
-
 fb1="${MIMIC_FB_DEB:-}"
 fb2="${MIMIC_FB_DKMS:-}"
 
@@ -786,61 +677,51 @@ elif [ -z "$primary1" ] || [ -z "$primary2" ]; then
 fi
 
 fetch_remote_with_fallback(){
-  primary="$1"
-  fallback="$2"
-  out="$3"
-  if [ -n "$primary" ] && curl -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 "$primary" -o "$out" >/dev/null 2>&1; then
-    return 0
-  fi
-  if [ -n "$fallback" ] && curl -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 "$fallback" -o "$out" >/dev/null 2>&1; then
-    return 0
-  fi
-  if [ -n "$primary" ] && curl -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 "$primary" -o "$out" >/dev/null 2>&1; then
-    return 0
-  fi
-  if [ -n "$fallback" ] && curl -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 "$fallback" -o "$out" >/dev/null 2>&1; then
-    return 0
-  fi
+  primary="$1"; fallback="$2"; out="$3"
+  if [ -n "$primary" ] && curl -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 "$primary" -o "$out" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$fallback" ] && curl -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 "$fallback" -o "$out" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$primary" ] && curl -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 "$primary" -o "$out" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$fallback" ] && curl -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 "$fallback" -o "$out" >/dev/null 2>&1; then return 0; fi
   return 1
 }
 
-fetch_remote_with_fallback "$fb1" "$primary1" "$tmp/mimic.deb" || { echo "DOWNLOAD_MIMIC_FAILED: primary=${primary1:-none} fallback=${fb1:-none}"; exit 8; }
-fetch_remote_with_fallback "$fb2" "$primary2" "$tmp/mimic-dkms.deb" || { echo "DOWNLOAD_MIMIC_DKMS_FAILED: primary=${primary2:-none} fallback=${fb2:-none}"; exit 8; }
-if ! dpkg-deb -I "$tmp/mimic.deb" >/dev/null 2>&1; then
-  echo "INVALID_MIMIC_DEB"
-  exit 8
-fi
-if ! dpkg-deb -I "$tmp/mimic-dkms.deb" >/dev/null 2>&1; then
-  echo "INVALID_MIMIC_DKMS_DEB"
-  exit 8
-fi
+fetch_remote_with_fallback "$fb1" "$primary1" "$tmp/mimic.deb" || { echo "DOWNLOAD_MIMIC_FAILED"; exit 8; }
+fetch_remote_with_fallback "$fb2" "$primary2" "$tmp/mimic-dkms.deb" || { echo "DOWNLOAD_MIMIC_DKMS_FAILED"; exit 8; }
+dpkg-deb -I "$tmp/mimic.deb" >/dev/null 2>&1 || { echo "INVALID_MIMIC_DEB"; exit 8; }
+dpkg-deb -I "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || { echo "INVALID_MIMIC_DKMS_DEB"; exit 8; }
 chmod 644 "$tmp"/mimic*.deb 2>/dev/null || true
-aptq install -y "$tmp/mimic.deb" "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || { echo "APT_INSTALL_FAILED"; exit 7; }
 
-command -v mimic >/dev/null 2>&1 && dpkg-query -W -f='${Status}' mimic 2>/dev/null | grep -qx 'install ok installed' && dpkg-query -W -f='${Status}' mimic-dkms 2>/dev/null | grep -qx 'install ok installed' && modinfo mimic >/dev/null 2>&1 || { echo "MIMIC_INSTALL_FAILED_OR_DKMS_MODULE_MISSING"; exit 7; }
+aptq install -y "$tmp/mimic.deb" "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || {
+  echo "WARN:REMOTE_MIMIC_APT_INSTALL_FAILED_ONCE"
+  aptq -f install -y >/dev/null 2>&1 || true
+  aptq install -y "$tmp/mimic.deb" "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || true
+}
+
+# Success criterion for this installer step is that the mimic command exists.
+# Module/service health is checked by the following service/indicator stages.
+if command -v mimic >/dev/null 2>&1; then
+  echo "OK:REMOTE_MIMIC_COMMAND_PRESENT"
+  exit 0
+fi
+
+echo "MIMIC_INSTALL_FAILED"
+exit 7
 REMOTE
 )"
   remote_rc=$?
   (( _azhdar_had_errexit )) && set -e
 
+  if [[ -n "$remote_out" ]]; then
+    printf '%s\n' "$remote_out" | grep -E '^(USING_STABLE_MIRROR|\[i\]|WARN:|ERR:|OK:|NO_|DOWNLOAD_|INVALID_|MIMIC_)' | tail -n 80 || true
+  fi
+
   if (( remote_rc != 0 )); then
-    # Print the useful part of the remote output once, without raising the
-    # global fatal trap. Then verify the actual remote state; if Mimic ended up
-    # healthy, continue with a warning instead of aborting.
-    [[ -n "$remote_out" ]] && printf '%s
-' "$remote_out" | tail -n 120
-    if ssh_run "command -v mimic >/dev/null 2>&1 && dpkg-query -W -f='\${Status}' mimic 2>/dev/null | grep -qx 'install ok installed' && dpkg-query -W -f='\${Status}' mimic-dkms 2>/dev/null | grep -qx 'install ok installed' && modinfo mimic >/dev/null 2>&1" >/dev/null 2>&1; then
-      warn "Remote Mimic installer returned rc=${remote_rc}, but package/module is healthy now; continuing."
+    if ssh_run "command -v mimic >/dev/null 2>&1" >/dev/null 2>&1; then
+      warn "Remote Mimic installer returned rc=${remote_rc}, but mimic command exists; continuing to service checks."
     else
-      err "Remote Mimic install did not complete cleanly (rc=${remote_rc})."
-      err "Check remote logs: dpkg -l | grep mimic ; dkms status ; tail -n 80 /var/lib/dkms/mimic/*/build/make.log"
+      err "Remote Mimic install did not complete (rc=${remote_rc})."
+      err "Check remote: apt -f install -y ; dpkg --configure -a ; dkms status ; tail -n 80 /var/lib/dkms/mimic/*/build/make.log"
       return "$remote_rc"
-    fi
-  else
-    # Keep successful output concise; show only meaningful informational lines.
-    if [[ -n "$remote_out" ]]; then
-      printf '%s
-' "$remote_out" | grep -E '^(USING_STABLE_MIRROR|\[i\]|WARN:|ERR:|OK:)' || true
     fi
   fi
 
