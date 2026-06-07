@@ -21,6 +21,26 @@ IR_MIRROR_MIMIC_BOOKWORM_DKMS_DEB="${ASSET_MIRROR_BASE}/bookworm_mimic-dkms_0.7.
 IR_MIRROR_WG_TOOLS_DEB="${ASSET_MIRROR_BASE}/wireguard-tools_1.0.20210914-1ubuntu4_amd64.deb"
 IR_MIRROR_WG_DKMS_DEB="${ASSET_MIRROR_BASE}/wireguard-dkms_1.0.20210606-1_all.deb"
 
+
+# AZHDAR pins Mimic to the last known-good DKMS package by default.
+# Newer upstream packages can break on some Ubuntu 24.04 kernels (BTF/ksym
+# mismatch). Keep the default stable unless the operator explicitly overrides it.
+AZHDAR_MIMIC_VERSION_PIN="${AZHDAR_MIMIC_VERSION_PIN:-0.7.0}"
+
+mimic_static_mirror_asset_url(){
+  # usage: mimic_static_mirror_asset_url <codename> <mimic|mimic-dkms>
+  # Return the pinned, known-good mirror assets when available.
+  local codename="$1" kind="$2"
+  codename="${codename,,}"
+  case "${codename}:${kind}" in
+    noble:mimic) printf '%s\n' "$IR_MIRROR_MIMIC_NOBLE_DEB" ;;
+    noble:mimic-dkms) printf '%s\n' "$IR_MIRROR_MIMIC_NOBLE_DKMS_DEB" ;;
+    bookworm:mimic) printf '%s\n' "$IR_MIRROR_MIMIC_BOOKWORM_DEB" ;;
+    bookworm:mimic-dkms) printf '%s\n' "$IR_MIRROR_MIMIC_BOOKWORM_DKMS_DEB" ;;
+    *) return 1 ;;
+  esac
+}
+
 # curl with strict time + "slow download" detection (abort quickly then fallback).
 # Defaults are tuned to avoid waiting too long on filtered/slow links.
 curl_fetch_fast(){
@@ -143,14 +163,53 @@ mimic_mirror_asset_url(){
     )
   fi
 
+  # Prefer the pinned known-good version when it exists in the mirror;
+  # otherwise fall back to the newest matching asset.
   for pat in "${patterns[@]}"; do
-    name="$(printf '%s\n' "$names" | grep -E "$pat" | sort -V | tail -n1 || true)"
+    name="$(printf '%s
+' "$names" | grep -E "$pat" | grep -F "${AZHDAR_MIMIC_VERSION_PIN}" | sort -V | tail -n1 || true)"
     if [[ -n "$name" ]]; then
-      printf '%s/%s\n' "${ASSET_MIRROR_BASE%/}" "$(azhdar_url_path_escape_name "$name")"
+      printf '%s/%s
+' "${ASSET_MIRROR_BASE%/}" "$(azhdar_url_path_escape_name "$name")"
+      return 0
+    fi
+  done
+  for pat in "${patterns[@]}"; do
+    name="$(printf '%s
+' "$names" | grep -E "$pat" | sort -V | tail -n1 || true)"
+    if [[ -n "$name" ]]; then
+      printf '%s/%s
+' "${ASSET_MIRROR_BASE%/}" "$(azhdar_url_path_escape_name "$name")"
       return 0
     fi
   done
   return 1
+}
+
+azhdar_policy_rcd_begin_local(){
+  # Prevent package maintainer scripts from restarting ssh/systemd services while
+  # AZHDAR is only repairing apt or installing DKMS. This avoids failures like:
+  #   Could not execute systemctl ... deb-systemd-invoke
+  # which can leave openssh-server half-configured and poison later apt runs.
+  local path="/usr/sbin/policy-rc.d" bak="/usr/sbin/policy-rc.d.azhdar-bak"
+  mkdir -p /usr/sbin 2>/dev/null || true
+  if [[ -e "$path" && ! -e "$bak" ]]; then
+    cp -a "$path" "$bak" 2>/dev/null || true
+  fi
+  cat >"$path" <<'EOF' 2>/dev/null || true
+#!/bin/sh
+exit 101
+EOF
+  chmod +x "$path" 2>/dev/null || true
+}
+
+azhdar_policy_rcd_end_local(){
+  local path="/usr/sbin/policy-rc.d" bak="/usr/sbin/policy-rc.d.azhdar-bak"
+  if [[ -e "$bak" ]]; then
+    mv -f "$bak" "$path" 2>/dev/null || true
+  else
+    rm -f "$path" 2>/dev/null || true
+  fi
 }
 
 azhdar_apt_force_unlock_local(){
@@ -199,12 +258,19 @@ $(pgrep -x "$name" 2>/dev/null || true)"
 
 azhdar_apt_get(){
   # Keep apt/needrestart non-interactive and avoid scary raw apt notices in the UI.
+  # While apt/dpkg is configuring packages, suppress service restarts so a broken
+  # ssh.service restart does not leave openssh-server half-configured.
+  local rc
   azhdar_apt_force_unlock_local >/dev/null 2>&1 || true
+  azhdar_policy_rcd_begin_local >/dev/null 2>&1 || true
   DEBIAN_FRONTEND=noninteractive \
   NEEDRESTART_MODE=a \
   NEEDRESTART_SUSPEND=1 \
   APT_LISTCHANGES_FRONTEND=none \
   apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 "$@"
+  rc=$?
+  azhdar_policy_rcd_end_local >/dev/null 2>&1 || true
+  return "$rc"
 }
 
 azhdar_prepare_local_debs_for_apt(){
@@ -301,8 +367,7 @@ azhdar_install_mimic_build_deps_local(){
     return 0
   fi
 
-  warn "apt is still inconsistent; running non-interactive full-upgrade repair, then retrying build deps."
-  azhdar_apt_get -o Dpkg::Options::=--force-confold full-upgrade -y >>"$log" 2>&1 || true
+  warn "apt is still inconsistent; avoiding full-upgrade during AZHDAR install and retrying only required build deps."
   azhdar_apt_self_heal_local >>"$log" 2>&1 || true
   apt_install_retry "${common[@]}" >>"$log" 2>&1 || true
   for hdr in $(azhdar_kernel_header_candidates_local | awk 'NF && !seen[$0]++'); do
@@ -354,18 +419,45 @@ mimic_supported_codename(){
   fi
 }
 
+azhdar_mimic_local_healthy(){
+  have_cmd mimic || return 1
+  if have_cmd dpkg-query; then
+    dpkg-query -W -f='${Status}' mimic 2>/dev/null | grep -qx 'install ok installed' || return 1
+    dpkg-query -W -f='${Status}' mimic-dkms 2>/dev/null | grep -qx 'install ok installed' || return 1
+  fi
+  modinfo mimic >/dev/null 2>&1 || return 1
+  return 0
+}
+
+azhdar_mimic_purge_broken_local(){
+  warn "Existing Mimic install is broken or half-configured; purging it before reinstalling stable Mimic ${AZHDAR_MIMIC_VERSION_PIN}."
+  systemctl stop 'mimic@*' >/dev/null 2>&1 || true
+  pkill -TERM -f 'mimic' >/dev/null 2>&1 || true
+  sleep 0.5
+  pkill -KILL -f 'mimic' >/dev/null 2>&1 || true
+  rm -f /run/mimic/*.lock /var/crash/mimic-dkms*.crash 2>/dev/null || true
+  azhdar_apt_get purge -y mimic mimic-dkms >/dev/null 2>&1 || true
+  dpkg --remove --force-remove-reinstreq mimic mimic-dkms >/dev/null 2>&1 || true
+  rm -rf /var/lib/dkms/mimic 2>/dev/null || true
+  azhdar_apt_self_heal_local >/dev/null 2>&1 || true
+}
+
 install_mimic_local(){
   step "Install Mimic on IR (local)"
   if have_cmd mimic; then
     azhdar_mimic_ensure_service_user_local || true
-    if declare -F azhdar_mimic_fast_module_ok_local >/dev/null 2>&1 && ! azhdar_mimic_fast_module_ok_local; then
-      warn "Existing local Mimic module is not ready; running bounded DKMS/BTF repair before service start."
-      if declare -F azhdar_mimic_ensure_kernel_module_local >/dev/null 2>&1; then
-        azhdar_mimic_ensure_kernel_module_local >/dev/null 2>&1 || warn "Local Mimic module repair did not confirm; service start will fail fast instead of hanging."
-      fi
+    if azhdar_mimic_local_healthy; then
+      ok "Mimic already installed (local); package/module checked."
+      return 0
     fi
-    ok "Mimic already installed (local); service account/module checked."
-    return 0
+    if declare -F azhdar_mimic_ensure_kernel_module_local >/dev/null 2>&1; then
+      azhdar_mimic_ensure_kernel_module_local >/dev/null 2>&1 || true
+    fi
+    if azhdar_mimic_local_healthy; then
+      ok "Mimic already installed (local); module repaired."
+      return 0
+    fi
+    azhdar_mimic_purge_broken_local || true
   fi
   if ! have_cmd apt-get; then
     die "Mimic installer currently supports Debian/Ubuntu (apt) only on this host."
@@ -379,8 +471,8 @@ install_mimic_local(){
   # Asset mirror fallbacks (used when GitHub is blocked).
   # Resolve dynamically from the File Browser share, so exact version filenames do not matter.
   local fb1="" fb2=""
-  fb1="$(mimic_mirror_asset_url "$codename" mimic 2>/dev/null || true)"
-  fb2="$(mimic_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || true)"
+  fb1="$(mimic_static_mirror_asset_url "$codename" mimic 2>/dev/null || mimic_mirror_asset_url "$codename" mimic 2>/dev/null || true)"
+  fb2="$(mimic_static_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || mimic_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || true)"
 
 local okcod
 okcod="$(mimic_supported_codename "$codename" || true)"
@@ -408,24 +500,27 @@ local tmp="/tmp/mimic-install.$$"
 rm -rf "$tmp"; mkdir -p "$tmp"; chmod 755 "$tmp" 2>/dev/null || true
 
 local u1 u2
-# Try GitHub first (if reachable); otherwise fall back to the m0000hamad mirror.
-u1="$(github_latest_asset_url "hack3ric/mimic" ".*/${codename}_mimic_[^/]*_amd64\.deb$" 2>/dev/null || true)"
-u2="$(github_latest_asset_url "hack3ric/mimic" ".*/${codename}_mimic-dkms_[^/]*_amd64\.deb$" 2>/dev/null || true)"
-
-if [[ -z "$u1" || -z "$u2" ]]; then
-  if [[ -n "$fb1" && -n "$fb2" ]]; then
-    warn "GitHub assets lookup failed (or blocked). Using ${ASSET_MIRROR_NAME:-m0000hamad} mirror for Mimic (${codename})."
-  else
-    die "Failed to locate Mimic .deb assets for codename=${codename}."
-  fi
+# Prefer the pinned mirror package first. GitHub latest is only a fallback;
+# using latest by default caused 0.7.1 DKMS/BTF failures on some noble kernels.
+u1=""
+u2=""
+if [[ -z "$fb1" || -z "$fb2" ]]; then
+  u1="$(github_latest_asset_url "hack3ric/mimic" ".*/${codename}_mimic_[^/]*_amd64\.deb$" 2>/dev/null || true)"
+  u2="$(github_latest_asset_url "hack3ric/mimic" ".*/${codename}_mimic-dkms_[^/]*_amd64\.deb$" 2>/dev/null || true)"
 fi
 
-  fetch_with_fallback "$u1" "$fb1" "$tmp/mimic.deb" || {
+if [[ -n "$fb1" && -n "$fb2" ]]; then
+  info "Using stable Mimic ${AZHDAR_MIMIC_VERSION_PIN} package from ${ASSET_MIRROR_NAME:-m0000hamad} mirror."
+elif [[ -z "$u1" || -z "$u2" ]]; then
+  die "Failed to locate Mimic .deb assets for codename=${codename}."
+fi
+
+  fetch_with_fallback "$fb1" "$u1" "$tmp/mimic.deb" || {
     err "Failed to download Mimic package (primary+fallback)."
     [[ -n "$fb1" ]] && echo "Mirror URL tried: $fb1"
     die "Mimic package download failed."
   }
-  fetch_with_fallback "$u2" "$fb2" "$tmp/mimic-dkms.deb" || {
+  fetch_with_fallback "$fb2" "$u2" "$tmp/mimic-dkms.deb" || {
     err "Failed to download Mimic DKMS package (primary+fallback)."
     [[ -n "$fb2" ]] && echo "Mirror URL tried: $fb2"
     die "Mimic DKMS package download failed."
@@ -451,10 +546,11 @@ fi
     fi
   fi
 
-  if ! have_cmd mimic; then
-    err "Mimic install failed on local host."
+  if ! azhdar_mimic_local_healthy; then
+    err "Mimic install did not complete cleanly on local host."
     dpkg -l | grep -i mimic || true
-    die "Mimic install failed. If DKMS failed, ensure compatible kernel + headers are available."
+    err "Check DKMS log: /var/lib/dkms/mimic/*/build/make.log"
+    die "Mimic install failed. AZHDAR did not continue with a half-configured Mimic package."
   fi
   azhdar_mimic_ensure_service_user_local || true
   ok "Mimic installed (local)."
@@ -462,11 +558,14 @@ fi
 
 install_mimic_remote(){
   step "Install Mimic on OUT (remote)"
-  if ssh_run "command -v mimic >/dev/null 2>&1 && echo yes || echo no" | tail -n1 | grep -qx yes; then
+  if ssh_run "command -v mimic >/dev/null 2>&1 && dpkg-query -W -f='\${Status}' mimic 2>/dev/null | grep -qx 'install ok installed' && dpkg-query -W -f='\${Status}' mimic-dkms 2>/dev/null | grep -qx 'install ok installed' && modinfo mimic >/dev/null 2>&1 && echo yes || echo no" | tail -n1 | grep -qx yes; then
     azhdar_mimic_ensure_service_user_remote || true
-    # Remote module is verified/repaired by mimic_remote_restart_checked with bounded timeouts.
-    ok "Mimic already installed (remote); service account checked."
+    ok "Mimic already installed (remote); package/module checked."
     return 0
+  fi
+  if ssh_run "command -v mimic >/dev/null 2>&1 && echo broken || true" | tail -n1 | grep -qx broken; then
+    warn "Remote Mimic install is broken or half-configured; purging it before reinstalling stable Mimic ${AZHDAR_MIMIC_VERSION_PIN}."
+    ssh_run "systemctl stop 'mimic@*' >/dev/null 2>&1 || true; pkill -TERM -f mimic >/dev/null 2>&1 || true; sleep 0.5; pkill -KILL -f mimic >/dev/null 2>&1 || true; rm -f /run/mimic/*.lock /var/crash/mimic-dkms*.crash 2>/dev/null || true; DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 purge -y mimic mimic-dkms >/dev/null 2>&1 || true; dpkg --remove --force-remove-reinstreq mimic mimic-dkms >/dev/null 2>&1 || true; rm -rf /var/lib/dkms/mimic 2>/dev/null || true" >/dev/null 2>&1 || true
   fi
 
   # Detect remote codename + arch (best-effort)
@@ -509,8 +608,8 @@ install_mimic_remote(){
   # Mirror fallbacks for remote install (used when GitHub is blocked).
   # Resolve dynamically from the File Browser share, so exact version filenames do not matter.
   local fb1="" fb2=""
-  fb1="$(mimic_mirror_asset_url "$codename" mimic 2>/dev/null || true)"
-  fb2="$(mimic_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || true)"
+  fb1="$(mimic_static_mirror_asset_url "$codename" mimic 2>/dev/null || mimic_mirror_asset_url "$codename" mimic 2>/dev/null || true)"
+  fb2="$(mimic_static_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || mimic_mirror_asset_url "$codename" mimic-dkms 2>/dev/null || true)"
 
 local okcod
 okcod="$(mimic_supported_codename "$codename" || true)"
@@ -558,7 +657,21 @@ $(pgrep -x "$name" 2>/dev/null || true)"
   rm -f $locks >/dev/null 2>&1 || true
   mkdir -p /var/lib/dpkg /var/cache/apt/archives/partial /var/lib/apt/lists/partial >/dev/null 2>&1 || true
 }
-aptq(){ apt_force_unlock >/dev/null 2>&1 || true; DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 "$@"; }
+policy_begin(){
+  path="/usr/sbin/policy-rc.d"; bak="/usr/sbin/policy-rc.d.azhdar-bak"
+  mkdir -p /usr/sbin 2>/dev/null || true
+  if [ -e "$path" ] && [ ! -e "$bak" ]; then cp -a "$path" "$bak" 2>/dev/null || true; fi
+  cat >"$path" <<'EOF' 2>/dev/null || true
+#!/bin/sh
+exit 101
+EOF
+  chmod +x "$path" 2>/dev/null || true
+}
+policy_end(){
+  path="/usr/sbin/policy-rc.d"; bak="/usr/sbin/policy-rc.d.azhdar-bak"
+  if [ -e "$bak" ]; then mv -f "$bak" "$path" 2>/dev/null || true; else rm -f "$path" 2>/dev/null || true; fi
+}
+aptq(){ apt_force_unlock >/dev/null 2>&1 || true; policy_begin >/dev/null 2>&1 || true; DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 "$@"; rc=$?; policy_end >/dev/null 2>&1 || true; return "$rc"; }
 apt_wait_locks(){ apt_force_unlock || true; return 0; }
 apt_repair(){
   apt_force_unlock || true
@@ -596,7 +709,7 @@ header_candidates(){
 }
 install_build_deps(){
   apt_repair || true
-  if aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool "linux-headers-0 0uname -r)" >/dev/null 2>&1; then
+  if aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool "linux-headers-$(uname -r)" >/dev/null 2>&1; then
     return 0
   fi
   echo "[i] Remote apt build deps failed once; running self-heal and header fallback..."
@@ -608,8 +721,7 @@ install_build_deps(){
   if command -v dkms >/dev/null 2>&1 && dpkg -s build-essential >/dev/null 2>&1; then
     return 0
   fi
-  echo "[i] Remote apt is still inconsistent; running non-interactive full-upgrade repair..."
-  aptq -o Dpkg::Options::=--force-confold full-upgrade -y >/dev/null 2>&1 || true
+  echo "[i] Remote apt is still inconsistent; avoiding full-upgrade during AZHDAR install and retrying only required build deps..."
   apt_repair || true
   aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
   for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
@@ -650,19 +762,20 @@ rm -rf "$tmp"; mkdir -p "$tmp"; chmod 755 "$tmp" 2>/dev/null || true
 fb1="${MIMIC_FB_DEB:-}"
 fb2="${MIMIC_FB_DKMS:-}"
 
-latest_json="$(curl -fsSL --connect-timeout 6 --max-time 20 https://api.github.com/repos/hack3ric/mimic/releases/latest 2>/dev/null || true)"
-urls="$(printf "%s" "$latest_json" | sed -n 's/.*"browser_download_url"[ ]*:[ ]*"\([^"]*\)".*/\1/p')"
+primary1=""
+primary2=""
+if [ -z "$fb1" ] || [ -z "$fb2" ]; then
+  latest_json="$(curl -fsSL --connect-timeout 6 --max-time 20 https://api.github.com/repos/hack3ric/mimic/releases/latest 2>/dev/null || true)"
+  urls="$(printf "%s" "$latest_json" | sed -n 's/.*"browser_download_url"[ ]*:[ ]*"\([^"]*\)".*/\1/p')"
+  primary1="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic_[^/]*_amd64\.deb$" | head -n1 || true)"
+  primary2="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic-dkms_[^/]*_amd64\.deb$" | head -n1 || true)"
+fi
 
-primary1="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic_[^/]*_amd64\.deb$" | head -n1 || true)"
-primary2="$(printf "%s\n" "$urls" | grep -E "/${codename}_mimic-dkms_[^/]*_amd64\.deb$" | head -n1 || true)"
-
-if [ -z "$primary1" ] || [ -z "$primary2" ]; then
-  if [ -n "$fb1" ] && [ -n "$fb2" ]; then
-    echo "GITHUB_BLOCKED_OR_NO_ASSETS: using ${ASSET_MIRROR_NAME:-m0000hamad} mirror"
-  else
-    echo "NO_ASSETS_FOR_${codename}"
-    exit 6
-  fi
+if [ -n "$fb1" ] && [ -n "$fb2" ]; then
+  echo "USING_STABLE_MIRROR: ${ASSET_MIRROR_NAME:-m0000hamad}"
+elif [ -z "$primary1" ] || [ -z "$primary2" ]; then
+  echo "NO_ASSETS_FOR_${codename}"
+  exit 6
 fi
 
 fetch_remote_with_fallback(){
@@ -684,8 +797,8 @@ fetch_remote_with_fallback(){
   return 1
 }
 
-fetch_remote_with_fallback "$primary1" "$fb1" "$tmp/mimic.deb" || { echo "DOWNLOAD_MIMIC_FAILED: primary=${primary1:-none} fallback=${fb1:-none}"; exit 8; }
-fetch_remote_with_fallback "$primary2" "$fb2" "$tmp/mimic-dkms.deb" || { echo "DOWNLOAD_MIMIC_DKMS_FAILED: primary=${primary2:-none} fallback=${fb2:-none}"; exit 8; }
+fetch_remote_with_fallback "$fb1" "$primary1" "$tmp/mimic.deb" || { echo "DOWNLOAD_MIMIC_FAILED: primary=${primary1:-none} fallback=${fb1:-none}"; exit 8; }
+fetch_remote_with_fallback "$fb2" "$primary2" "$tmp/mimic-dkms.deb" || { echo "DOWNLOAD_MIMIC_DKMS_FAILED: primary=${primary2:-none} fallback=${fb2:-none}"; exit 8; }
 if ! dpkg-deb -I "$tmp/mimic.deb" >/dev/null 2>&1; then
   echo "INVALID_MIMIC_DEB"
   exit 8
@@ -697,7 +810,7 @@ fi
 chmod 644 "$tmp"/mimic*.deb 2>/dev/null || true
 aptq install -y "$tmp/mimic.deb" "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || { echo "APT_INSTALL_FAILED"; exit 7; }
 
-command -v mimic >/dev/null 2>&1 || { echo "MIMIC_INSTALL_FAILED"; exit 7; }
+command -v mimic >/dev/null 2>&1 && dpkg-query -W -f='${Status}' mimic 2>/dev/null | grep -qx 'install ok installed' && dpkg-query -W -f='${Status}' mimic-dkms 2>/dev/null | grep -qx 'install ok installed' && modinfo mimic >/dev/null 2>&1 || { echo "MIMIC_INSTALL_FAILED_OR_DKMS_MODULE_MISSING"; exit 7; }
 REMOTE
 
   azhdar_mimic_ensure_service_user_remote || true
