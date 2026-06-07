@@ -358,7 +358,13 @@ install_mimic_local(){
   step "Install Mimic on IR (local)"
   if have_cmd mimic; then
     azhdar_mimic_ensure_service_user_local || true
-    ok "Mimic already installed (local); service account checked."
+    if declare -F azhdar_mimic_fast_module_ok_local >/dev/null 2>&1 && ! azhdar_mimic_fast_module_ok_local; then
+      warn "Existing local Mimic module is not ready; running bounded DKMS/BTF repair before service start."
+      if declare -F azhdar_mimic_ensure_kernel_module_local >/dev/null 2>&1; then
+        azhdar_mimic_ensure_kernel_module_local >/dev/null 2>&1 || warn "Local Mimic module repair did not confirm; service start will fail fast instead of hanging."
+      fi
+    fi
+    ok "Mimic already installed (local); service account/module checked."
     return 0
   fi
   if ! have_cmd apt-get; then
@@ -458,6 +464,7 @@ install_mimic_remote(){
   step "Install Mimic on OUT (remote)"
   if ssh_run "command -v mimic >/dev/null 2>&1 && echo yes || echo no" | tail -n1 | grep -qx yes; then
     azhdar_mimic_ensure_service_user_remote || true
+    # Remote module is verified/repaired by mimic_remote_restart_checked with bounded timeouts.
     ok "Mimic already installed (remote); service account checked."
     return 0
   fi

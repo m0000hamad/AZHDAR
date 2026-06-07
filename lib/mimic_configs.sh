@@ -117,6 +117,28 @@ REMOTE
 
 
 
+
+azhdar_cmd_timeout_local(){
+  # usage: azhdar_cmd_timeout_local <seconds> <command> [args...]
+  # Prevent Smart Wizard from appearing frozen during DKMS/systemd repairs.
+  local secs="${1:-60}"; shift || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --foreground --kill-after=5s "${secs}s" "$@"
+  else
+    "$@"
+  fi
+}
+
+azhdar_systemctl_quick_local(){
+  # systemctl can block for the unit timeout while mimic auto-restarts. Bound it.
+  local secs="${1:-25}"; shift || return 1
+  azhdar_cmd_timeout_local "$secs" systemctl "$@"
+}
+
+azhdar_mimic_fast_module_ok_local(){
+  modprobe mimic >/dev/null 2>&1 && azhdar_mimic_kallsyms_has_hook_local
+}
+
 azhdar_mimic_clear_runtime_local(){
   # Remove stale Mimic runtime locks after a failed/crashed start.
   # Mimic may leave /run/mimic/*.lock behind; next start then exits with
@@ -153,11 +175,11 @@ azhdar_mimic_install_btf_tools_local(){
       azhdar_apt_self_heal_local >/dev/null 2>&1 || true
     fi
     if declare -F azhdar_apt_get >/dev/null 2>&1; then
-      azhdar_apt_get update -y >/dev/null 2>&1 || true
-      azhdar_apt_get install -y pahole dwarves bpftool linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic >/dev/null 2>&1 ||         azhdar_apt_get install -y pahole dwarves bpftool >/dev/null 2>&1 ||         azhdar_apt_get install -y pahole dwarves >/dev/null 2>&1 || true
+      azhdar_cmd_timeout_local 45 azhdar_apt_get update -y >/dev/null 2>&1 || true
+      azhdar_cmd_timeout_local 90 azhdar_apt_get install -y pahole dwarves bpftool linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic >/dev/null 2>&1 ||         azhdar_cmd_timeout_local 60 azhdar_apt_get install -y pahole dwarves bpftool >/dev/null 2>&1 ||         azhdar_cmd_timeout_local 45 azhdar_apt_get install -y pahole dwarves >/dev/null 2>&1 || true
     else
-      apt-get update -y >/dev/null 2>&1 || true
-      apt-get install -y pahole dwarves bpftool linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic >/dev/null 2>&1 ||         apt-get install -y pahole dwarves bpftool >/dev/null 2>&1 ||         apt-get install -y pahole dwarves >/dev/null 2>&1 || true
+      azhdar_cmd_timeout_local 45 apt-get update -y >/dev/null 2>&1 || true
+      azhdar_cmd_timeout_local 90 apt-get install -y pahole dwarves bpftool linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic >/dev/null 2>&1 ||         azhdar_cmd_timeout_local 60 apt-get install -y pahole dwarves bpftool >/dev/null 2>&1 ||         azhdar_cmd_timeout_local 45 apt-get install -y pahole dwarves >/dev/null 2>&1 || true
     fi
   fi
 }
@@ -175,40 +197,45 @@ azhdar_mimic_rebuild_module_local(){
   local kver="$(uname -r)" ver seen=""
   command -v dkms >/dev/null 2>&1 || return 1
   azhdar_mimic_install_btf_tools_local || true
-  modprobe -r mimic >/dev/null 2>&1 || true
+  azhdar_cmd_timeout_local 15 modprobe -r mimic >/dev/null 2>&1 || true
   while read -r ver; do
     [[ -n "$ver" ]] || continue
     case " $seen " in *" $ver "*) continue;; esac
     seen+=" $ver"
-    dkms remove -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
-    dkms build  -m mimic -v "$ver" -k "$kver" >/dev/null 2>&1 || true
-    dkms install -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
+    azhdar_cmd_timeout_local 45 dkms remove -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
+    azhdar_cmd_timeout_local 120 dkms build  -m mimic -v "$ver" -k "$kver" >/dev/null 2>&1 || true
+    azhdar_cmd_timeout_local 60 dkms install -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
   done < <(azhdar_mimic_dkms_versions_local)
   # If DKMS database was stale/empty, reinstalling the package repopulates /var/lib/dkms/mimic.
   if [[ -z "${seen// /}" ]] && dpkg -s mimic-dkms >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
     if declare -F azhdar_apt_get >/dev/null 2>&1; then
-      azhdar_apt_get install --reinstall -y mimic-dkms >/dev/null 2>&1 || true
+      azhdar_cmd_timeout_local 120 azhdar_apt_get install --reinstall -y mimic-dkms >/dev/null 2>&1 || true
     else
       DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y mimic-dkms >/dev/null 2>&1 || true
     fi
   fi
-  dkms autoinstall -k "$kver" >/dev/null 2>&1 || dkms autoinstall >/dev/null 2>&1 || true
-  depmod -a >/dev/null 2>&1 || true
-  modprobe mimic >/dev/null 2>&1 || return 1
+  azhdar_cmd_timeout_local 90 dkms autoinstall -k "$kver" >/dev/null 2>&1 || azhdar_cmd_timeout_local 90 dkms autoinstall >/dev/null 2>&1 || true
+  azhdar_cmd_timeout_local 30 depmod -a >/dev/null 2>&1 || true
+  azhdar_cmd_timeout_local 15 modprobe mimic >/dev/null 2>&1 || return 1
 }
 
 azhdar_mimic_ensure_kernel_module_local(){
   # Best-effort DKMS/module recovery. A plain modprobe is not enough when the
   # module was built before pahole/BTF tooling was present: libbpf then cannot
   # resolve mimic_change_csum_offset and the service exits with status=22.
-  if modprobe mimic >/dev/null 2>&1 && azhdar_mimic_kallsyms_has_hook_local; then
+  if azhdar_cmd_timeout_local 15 modprobe mimic >/dev/null 2>&1 && azhdar_mimic_kallsyms_has_hook_local; then
     return 0
   fi
-  if declare -F azhdar_install_mimic_build_deps_local >/dev/null 2>&1; then
-    azhdar_install_mimic_build_deps_local >/dev/null 2>&1 || true
+  # During service start/restart do not run unbounded apt repairs; those belong to
+  # the install/check phase. This keeps Smart Wizard from sitting at
+  # "Start services (local)" for many minutes on small VPS kernels.
+  if [[ "${AZHDAR_MIMIC_SERVICE_START_FAST:-0}" != "1" ]]; then
+    if declare -F azhdar_install_mimic_build_deps_local >/dev/null 2>&1; then
+      azhdar_install_mimic_build_deps_local >/dev/null 2>&1 || true
+    fi
   fi
   azhdar_mimic_rebuild_module_local >/dev/null 2>&1 || true
-  if modprobe mimic >/dev/null 2>&1 && azhdar_mimic_kallsyms_has_hook_local; then
+  if azhdar_cmd_timeout_local 15 modprobe mimic >/dev/null 2>&1 && azhdar_mimic_kallsyms_has_hook_local; then
     return 0
   fi
   return 1
@@ -280,38 +307,40 @@ mimic_restart_local_checked(){
   mimic_conf_force_skb "$cfg"
   azhdar_mimic_ensure_service_user_local || true
   systemctl daemon-reload >/dev/null 2>&1 || true
-  azhdar_mimic_ensure_kernel_module_local || true
+  AZHDAR_MIMIC_SERVICE_START_FAST=1 azhdar_mimic_ensure_kernel_module_local || true
   azhdar_mimic_clear_runtime_local "$wan" || true
   systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
-  systemctl enable "mimic@${wan}" >/dev/null 2>&1 || true
+  azhdar_systemctl_quick_local 15 enable "mimic@${wan}" >/dev/null 2>&1 || true
 
-  if systemctl restart "mimic@${wan}" >/dev/null 2>&1; then
+  if azhdar_systemctl_quick_local 25 restart "mimic@${wan}" >/dev/null 2>&1; then
     return 0
   fi
 
   warn "Local Mimic failed on ${wan}; clearing stale locks, repairing module/account, and retrying."
   mimic_conf_force_skb "$cfg"
   azhdar_mimic_ensure_service_user_local || true
-  azhdar_mimic_ensure_kernel_module_local || true
+  AZHDAR_MIMIC_SERVICE_START_FAST=1 azhdar_mimic_ensure_kernel_module_local || true
   azhdar_mimic_clear_runtime_local "$wan" || true
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
-  if systemctl restart "mimic@${wan}" >/dev/null 2>&1; then
+  if azhdar_systemctl_quick_local 25 restart "mimic@${wan}" >/dev/null 2>&1; then
     ok "Local Mimic recovered on ${wan} after stale-lock/module repair."
     return 0
   fi
 
-  warn "Local Mimic still failed on ${wan}; forcing DKMS/BTF rebuild and one final retry."
+  warn "Local Mimic still failed on ${wan}; running bounded DKMS/BTF repair (max about 2 minutes) and one final retry."
   azhdar_mimic_clear_runtime_local "$wan" || true
   azhdar_mimic_rebuild_module_local >/dev/null 2>&1 || true
   azhdar_mimic_clear_runtime_local "$wan" || true
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
-  if systemctl restart "mimic@${wan}" >/dev/null 2>&1; then
+  if azhdar_systemctl_quick_local 25 restart "mimic@${wan}" >/dev/null 2>&1; then
     ok "Local Mimic recovered on ${wan} after DKMS/BTF rebuild."
     return 0
   fi
 
+  systemctl stop "mimic@${wan}" >/dev/null 2>&1 || true
+  systemctl reset-failed "mimic@${wan}" >/dev/null 2>&1 || true
   err "Local Mimic service failed: mimic@${wan}"
   systemctl status "mimic@${wan}" --no-pager -l 2>/dev/null | sed -n '1,80p' || true
   journalctl -u "mimic@${wan}" -n 80 --no-pager -l 2>/dev/null || true
@@ -355,6 +384,18 @@ if [ -n "$unit" ]; then
     chmod 755 /var/lib/mimic /run/mimic /etc/mimic 2>/dev/null || true
   esac
 fi
+cmd_timeout(){
+  secs="${1:-60}"; shift || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --foreground --kill-after=5s "${secs}s" "$@"
+  else
+    "$@"
+  fi
+}
+systemctl_quick(){
+  secs="${1:-25}"; shift || return 1
+  cmd_timeout "$secs" systemctl "$@"
+}
 clear_mimic_runtime(){
   systemctl stop "mimic@${WAN_IF}" >/dev/null 2>&1 || true
   systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
@@ -371,8 +412,8 @@ mimic_kallsyms_has_hook(){ grep -qw 'mimic_change_csum_offset' /proc/kallsyms 2>
 install_btf_tools(){
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
-    apt-get update -y >/dev/null 2>&1 || true
-    apt-get install -y pahole dwarves bpftool linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic >/dev/null 2>&1 ||       apt-get install -y pahole dwarves bpftool >/dev/null 2>&1 ||       apt-get install -y pahole dwarves >/dev/null 2>&1 || true
+    cmd_timeout 45 apt-get update -y >/dev/null 2>&1 || true
+    cmd_timeout 90 apt-get install -y pahole dwarves bpftool linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic >/dev/null 2>&1 ||       cmd_timeout 60 apt-get install -y pahole dwarves bpftool >/dev/null 2>&1 ||       cmd_timeout 45 apt-get install -y pahole dwarves >/dev/null 2>&1 || true
   fi
 }
 dkms_versions(){
@@ -384,23 +425,23 @@ rebuild_mimic_module(){
   command -v dkms >/dev/null 2>&1 || return 1
   kver="$(uname -r)"; seen=""
   install_btf_tools || true
-  modprobe -r mimic >/dev/null 2>&1 || true
+  cmd_timeout 15 modprobe -r mimic >/dev/null 2>&1 || true
   while read -r ver; do
     [ -n "$ver" ] || continue
     case " $seen " in *" $ver "*) continue;; esac
     seen="$seen $ver"
-    dkms remove -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
-    dkms build  -m mimic -v "$ver" -k "$kver" >/dev/null 2>&1 || true
-    dkms install -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
+    cmd_timeout 45 dkms remove -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
+    cmd_timeout 120 dkms build  -m mimic -v "$ver" -k "$kver" >/dev/null 2>&1 || true
+    cmd_timeout 60 dkms install -m mimic -v "$ver" -k "$kver" --force >/dev/null 2>&1 || true
   done <<EOF_DKMS
 $(dkms_versions)
 EOF_DKMS
   if [ -z "$(printf '%s' "$seen" | tr -d ' ')" ] && dpkg -s mimic-dkms >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get install --reinstall -y mimic-dkms >/dev/null 2>&1 || true
   fi
-  dkms autoinstall -k "$kver" >/dev/null 2>&1 || dkms autoinstall >/dev/null 2>&1 || true
-  depmod -a >/dev/null 2>&1 || true
-  modprobe mimic >/dev/null 2>&1 || return 1
+  cmd_timeout 90 dkms autoinstall -k "$kver" >/dev/null 2>&1 || cmd_timeout 90 dkms autoinstall >/dev/null 2>&1 || true
+  cmd_timeout 30 depmod -a >/dev/null 2>&1 || true
+  cmd_timeout 15 modprobe mimic >/dev/null 2>&1 || return 1
 }
 ensure_mimic_module(){
   if modprobe mimic >/dev/null 2>&1 && mimic_kallsyms_has_hook; then return 0; fi
@@ -412,8 +453,8 @@ systemctl daemon-reload >/dev/null 2>&1 || true
 ensure_mimic_module || true
 clear_mimic_runtime || true
 systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-systemctl enable "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-if systemctl restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
+systemctl_quick 15 enable "mimic@${WAN_IF}" >/dev/null 2>&1 || true
+if systemctl_quick 25 restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
   echo "OK:REMOTE_MIMIC:${WAN_IF}"
   exit 0
 fi
@@ -422,7 +463,7 @@ ensure_mimic_module || true
 clear_mimic_runtime || true
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-if systemctl restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
+if systemctl_quick 25 restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
   echo "OK:REMOTE_MIMIC:${WAN_IF}:recovered"
   exit 0
 fi
@@ -432,7 +473,7 @@ rebuild_mimic_module >/dev/null 2>&1 || true
 clear_mimic_runtime || true
 systemctl daemon-reload >/dev/null 2>&1 || true
 systemctl reset-failed "mimic@${WAN_IF}" >/dev/null 2>&1 || true
-if systemctl restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
+if systemctl_quick 25 restart "mimic@${WAN_IF}" >/dev/null 2>&1; then
   echo "OK:REMOTE_MIMIC:${WAN_IF}:dkms-btf-recovered"
   exit 0
 fi

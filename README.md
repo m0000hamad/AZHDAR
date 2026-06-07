@@ -72,6 +72,6 @@ Mimic fallback mirror name: m0000hamad (`https://dl.digitsell.shop/share/Wf-XKNL
 - Shows the real `mimic@<wan>` systemd status/journal when Mimic fails.
 - Caps automatic safe repair passes so the UI does not appear stuck.
 
-## v3.2.18 hotfix
+## v3.2.19 hotfix
 - Adds aggressive Mimic DKMS/BTF repair for service failures with `mimic_change_csum_offset` / `failed to load BPF program`.
 - Installs `pahole/dwarves/bpftool`, rebuilds/reinstalls the Mimic DKMS module for the running kernel, reloads it, clears stale runtime locks, and retries the service.
