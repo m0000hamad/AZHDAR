@@ -153,8 +153,53 @@ mimic_mirror_asset_url(){
   return 1
 }
 
+azhdar_apt_force_unlock_local(){
+  # Aggressive apt/dpkg recovery for one-step installs.
+  # The user expects Smart Wizard to continue quickly; unattended-upgrades or
+  # stale apt/dpkg locks should not block Mimic build-deps forever.
+  local locks=(
+    /var/lib/dpkg/lock-frontend
+    /var/lib/dpkg/lock
+    /var/cache/apt/archives/lock
+    /var/lib/apt/lists/lock
+  )
+  local pids="" pid name
+
+  # Stop timers/services that commonly grab apt locks in the background.
+  if have_cmd systemctl; then
+    systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service >/dev/null 2>&1 || true
+    systemctl stop unattended-upgrades.service packagekit.service >/dev/null 2>&1 || true
+  fi
+
+  if have_cmd fuser; then
+    pids="$(fuser "${locks[@]}" 2>/dev/null | tr ' ' '\n' | awk 'NF && !seen[$0]++' || true)"
+  fi
+
+  # Also catch processes that may not show up via fuser yet but are clearly
+  # package-manager frontends/background jobs.
+  if have_cmd pgrep; then
+    for name in apt apt-get apt.systemd.daily aptitude dpkg unattended-upgrade unattended-upgrades packagekitd; do
+      pids="${pids}
+$(pgrep -x "$name" 2>/dev/null || true)"
+    done
+  fi
+
+  pids="$(printf '%s\n' "$pids" | awk -v self="$$" 'NF && $1 != self && !seen[$0]++')"
+  if [[ -n "$pids" ]]; then
+    warn "Aggressive apt repair: killing stuck apt/dpkg/unattended-upgrades processes." >&2
+    for pid in $pids; do kill "$pid" >/dev/null 2>&1 || true; done
+    sleep 1
+    for pid in $pids; do kill -9 "$pid" >/dev/null 2>&1 || true; done
+    sleep 1
+  fi
+
+  rm -f "${locks[@]}" /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null || true
+  mkdir -p /var/lib/dpkg /var/cache/apt/archives/partial /var/lib/apt/lists/partial 2>/dev/null || true
+}
+
 azhdar_apt_get(){
   # Keep apt/needrestart non-interactive and avoid scary raw apt notices in the UI.
+  azhdar_apt_force_unlock_local >/dev/null 2>&1 || true
   DEBIAN_FRONTEND=noninteractive \
   NEEDRESTART_MODE=a \
   NEEDRESTART_SUSPEND=1 \
@@ -179,23 +224,15 @@ azhdar_print_apt_failure_log(){
 }
 
 azhdar_apt_wait_locks_local(){
-  # Avoid false build-deps failures while unattended-upgrades/dpkg is still active.
-  local i p
-  for i in $(seq 1 60); do
-    p=""
-    if have_cmd fuser; then
-      p="$(fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true)"
-    fi
-    [[ -z "$p" ]] && return 0
-    sleep 2
-  done
-  warn "apt/dpkg lock is still busy; trying apt repair anyway."
+  # No long wait: force-clear apt/dpkg locks and continue.
+  azhdar_apt_force_unlock_local || true
   return 0
 }
 
 azhdar_apt_self_heal_local(){
-  # Conservative automatic repair for broken/half-configured apt states.
+  # Aggressive automatic repair for broken/half-configured apt states.
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
+  azhdar_apt_force_unlock_local || true
   azhdar_apt_wait_locks_local || true
   dpkg --configure -a >/dev/null 2>&1 || true
   azhdar_apt_get -f install -y >/dev/null 2>&1 || true
@@ -487,21 +524,37 @@ if ! command -v apt-get >/dev/null 2>&1; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
-aptq(){ DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 "$@"; }
-apt_wait_locks(){
-  i=0
-  while [ "$i" -lt 60 ]; do
-    if command -v fuser >/dev/null 2>&1; then
-      busy="$(fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true)"
-      [ -z "$busy" ] && return 0
-    else
-      return 0
-    fi
-    i=$((i+1)); sleep 2
-  done
-  return 0
+apt_force_unlock(){
+  locks="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service >/dev/null 2>&1 || true
+    systemctl stop unattended-upgrades.service packagekit.service >/dev/null 2>&1 || true
+  fi
+  pids=""
+  if command -v fuser >/dev/null 2>&1; then
+    pids="$(fuser $locks 2>/dev/null | tr ' ' '\n' | awk 'NF && !seen[$0]++' || true)"
+  fi
+  if command -v pgrep >/dev/null 2>&1; then
+    for name in apt apt-get apt.systemd.daily aptitude dpkg unattended-upgrade unattended-upgrades packagekitd; do
+      pids="${pids}
+$(pgrep -x "$name" 2>/dev/null || true)"
+    done
+  fi
+  pids="$(printf '%s\n' "$pids" | awk -v self="$$" 'NF && $1 != self && !seen[$0]++')"
+  if [ -n "$pids" ]; then
+    echo "[i] Aggressive apt repair: killing stuck apt/dpkg/unattended-upgrades processes..." >&2
+    for pid in $pids; do kill "$pid" >/dev/null 2>&1 || true; done
+    sleep 1
+    for pid in $pids; do kill -9 "$pid" >/dev/null 2>&1 || true; done
+    sleep 1
+  fi
+  rm -f $locks >/dev/null 2>&1 || true
+  mkdir -p /var/lib/dpkg /var/cache/apt/archives/partial /var/lib/apt/lists/partial >/dev/null 2>&1 || true
 }
+aptq(){ apt_force_unlock >/dev/null 2>&1 || true; DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 "$@"; }
+apt_wait_locks(){ apt_force_unlock || true; return 0; }
 apt_repair(){
+  apt_force_unlock || true
   apt_wait_locks || true
   dpkg --configure -a >/dev/null 2>&1 || true
   aptq -f install -y >/dev/null 2>&1 || true
