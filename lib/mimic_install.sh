@@ -276,7 +276,7 @@ azhdar_install_mimic_build_deps_local(){
   # "apt --fix-broken install ; apt full-upgrade" instruction.
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
   local log="/tmp/azhdar-mimic-build-deps.$$.log"
-  local -a common=(dkms build-essential xz-utils lz4 curl ca-certificates)
+  local -a common=(dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool)
   local hdr
 
   azhdar_apt_self_heal_local >/dev/null 2>&1 || true
@@ -589,12 +589,12 @@ header_candidates(){
 }
 install_build_deps(){
   apt_repair || true
-  if aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates "linux-headers-$(uname -r)" >/dev/null 2>&1; then
+  if aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool "linux-headers-0 0uname -r)" >/dev/null 2>&1; then
     return 0
   fi
   echo "[i] Remote apt build deps failed once; running self-heal and header fallback..."
   apt_repair || true
-  aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates >/dev/null 2>&1 || true
+  aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
   for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
     aptq install -y "$hdr" >/dev/null 2>&1 && break || true
   done
@@ -604,7 +604,7 @@ install_build_deps(){
   echo "[i] Remote apt is still inconsistent; running non-interactive full-upgrade repair..."
   aptq -o Dpkg::Options::=--force-confold full-upgrade -y >/dev/null 2>&1 || true
   apt_repair || true
-  aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates >/dev/null 2>&1 || true
+  aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
   for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
     aptq install -y "$hdr" >/dev/null 2>&1 && break || true
   done
