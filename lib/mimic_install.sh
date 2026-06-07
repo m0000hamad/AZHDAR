@@ -339,43 +339,58 @@ azhdar_kernel_header_candidates_local(){
 
 azhdar_install_mimic_build_deps_local(){
   # Self-healing build dependency installer for Mimic-DKMS.
-  # Fixes broken dpkg states automatically instead of stopping with a manual
-  # "apt --fix-broken install ; apt full-upgrade" instruction.
+  # Keep the first path identical to the command that works reliably by hand:
+  #   apt install -y dkms build-essential "linux-headers-$(uname -r)"
+  # Optional helper packages are installed only after the core deps are present,
+  # so missing bpftool/pahole/dwarves cannot falsely fail Mimic preparation.
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
   local log="/tmp/azhdar-mimic-build-deps.$$.log"
-  local -a common=(dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool)
-  local hdr
+  local kver hdr
+  kver="$(uname -r)"
 
-  azhdar_apt_self_heal_local >/dev/null 2>&1 || true
-  if apt_install_retry "${common[@]}" "linux-headers-$(uname -r)" >"$log" 2>&1; then
-    return 0
-  fi
+  : >"$log" 2>/dev/null || true
 
-  warn "Build deps/header install failed once; running apt self-heal and trying safe fallbacks."
-  azhdar_apt_self_heal_local >/dev/null 2>&1 || true
-  apt_install_retry "${common[@]}" >>"$log" 2>&1 || true
-
-  for hdr in $(azhdar_kernel_header_candidates_local | awk 'NF && !seen[$0]++'); do
-    if apt_install_retry "$hdr" >>"$log" 2>&1; then
-      break
-    fi
-  done
-
-  if have_cmd dkms && dpkg -s build-essential >/dev/null 2>&1; then
-    if [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
-      warn "Exact running-kernel headers are not available yet; Mimic-DKMS install will still try generic/provider headers. A reboot after kernel upgrade may be needed."
-    fi
-    return 0
-  fi
-
-  warn "apt is still inconsistent; avoiding full-upgrade during AZHDAR install and retrying only required build deps."
   azhdar_apt_self_heal_local >>"$log" 2>&1 || true
-  apt_install_retry "${common[@]}" >>"$log" 2>&1 || true
+
+  # Exact fast path: this mirrors the manual fix users run successfully.
+  if azhdar_apt_get install -y dkms build-essential "linux-headers-${kver}" >>"$log" 2>&1; then
+    apt_install_retry xz-utils lz4 curl ca-certificates pahole dwarves bpftool >>"$log" 2>&1 || true
+    return 0
+  fi
+
+  warn "Exact kernel-header install failed once; repairing apt and retrying the same safe command."
+  azhdar_apt_self_heal_local >>"$log" 2>&1 || true
+  azhdar_apt_get update -y >>"$log" 2>&1 || true
+
+  # Retry the same exact command once after refresh; do not replace it with only
+  # generic headers unless it truly remains unavailable.
+  if azhdar_apt_get install -y dkms build-essential "linux-headers-${kver}" >>"$log" 2>&1; then
+    apt_install_retry xz-utils lz4 curl ca-certificates pahole dwarves bpftool >>"$log" 2>&1 || true
+    return 0
+  fi
+
+  warn "Exact linux-headers-${kver} is still unavailable; trying provider/header fallbacks."
+  azhdar_apt_self_heal_local >>"$log" 2>&1 || true
+
+  # Core deps must succeed independently from optional tooling.
+  if ! azhdar_apt_get install -y dkms build-essential >>"$log" 2>&1; then
+    azhdar_apt_get -f install -y >>"$log" 2>&1 || true
+    azhdar_apt_get install -y dkms build-essential >>"$log" 2>&1 || true
+  fi
+
   for hdr in $(azhdar_kernel_header_candidates_local | awk 'NF && !seen[$0]++'); do
-    apt_install_retry "$hdr" >>"$log" 2>&1 && break || true
+    azhdar_apt_get install -y "$hdr" >>"$log" 2>&1 && break || true
   done
 
+  # Optional packages help DKMS/BTF, but they must not make build-deps look
+  # broken when dkms/build-essential/exact headers are otherwise usable.
+  apt_install_retry xz-utils lz4 curl ca-certificates pahole dwarves bpftool >>"$log" 2>&1 || true
+
   if have_cmd dkms && dpkg -s build-essential >/dev/null 2>&1; then
+    if [[ -e "/lib/modules/${kver}/build" ]]; then
+      return 0
+    fi
+    warn "Exact running-kernel headers are not installed; Mimic-DKMS will try available provider headers. A reboot may be needed if the running kernel is older than installed headers."
     return 0
   fi
 
@@ -383,6 +398,7 @@ azhdar_install_mimic_build_deps_local(){
   azhdar_print_apt_failure_log "$log"
   return 1
 }
+
 ensure_cache_dir(){
   mkdir -p "${BASE_DIR}/cache/mimic" 2>/dev/null || true
 }
@@ -639,9 +655,17 @@ aptq(){ DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 
 if ! command -v dkms >/dev/null 2>&1 || ! dpkg -s build-essential >/dev/null 2>&1; then
   echo "[i] Installing DKMS build deps (best-effort; non-fatal)..."
 fi
-aptq update -y >/dev/null 2>&1 || true
-aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
-aptq install -y "linux-headers-$(uname -r)" >/dev/null 2>&1 || aptq install -y linux-headers-generic >/dev/null 2>&1 || true
+# First try the exact command that reliably fixes DKMS on fresh Ubuntu hosts.
+aptq install -y dkms build-essential "linux-headers-$(uname -r)" >/dev/null 2>&1 || {
+  aptq -f install -y >/dev/null 2>&1 || true
+  aptq update -y >/dev/null 2>&1 || true
+  aptq install -y dkms build-essential "linux-headers-$(uname -r)" >/dev/null 2>&1 || true
+}
+# Optional tooling must not make the remote install fail by itself.
+aptq install -y xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
+if [ ! -e "/lib/modules/$(uname -r)/build" ]; then
+  aptq install -y linux-headers-generic linux-headers-virtual >/dev/null 2>&1 || true
+fi
 aptq -f install -y >/dev/null 2>&1 || true
 
 codename="${CODENAME:-}"
