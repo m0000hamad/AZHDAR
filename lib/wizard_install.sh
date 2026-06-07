@@ -13,15 +13,28 @@ command -v yum >/dev/null 2>&1 && PM=yum
 command -v pacman >/dev/null 2>&1 && PM=pacman
 
 if [ "$PM" = apt ]; then
-  export DEBIAN_FRONTEND=noninteractive
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update -y >/dev/null 2>&1 || true
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y wireguard-tools wireguard iptables iproute2 iputils-ping curl ca-certificates git build-essential libpcap-dev netcat-openbsd tcpdump python3 >/dev/null 2>&1 || true
+  export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
+  need=""
+  command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 || need="$need wireguard-tools"
+  command -v iptables >/dev/null 2>&1 || need="$need iptables"
+  command -v ip >/dev/null 2>&1 || need="$need iproute2"
+  command -v ping >/dev/null 2>&1 || need="$need iputils-ping"
+  command -v curl >/dev/null 2>&1 || need="$need curl ca-certificates"
+  command -v python3 >/dev/null 2>&1 || need="$need python3"
+  command -v nc >/dev/null 2>&1 || need="$need netcat-openbsd"
+  if [ -n "$(printf '%s' "$need" | tr -d ' ')" ]; then
+    # Lightweight: no unconditional apt update, no DKMS/build deps here.
+    apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install --no-install-recommends -y $need >/dev/null 2>&1 || {
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update -y >/dev/null 2>&1 || true
+      apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install --no-install-recommends -y $need >/dev/null 2>&1 || true
+    }
+  fi
 elif [ "$PM" = dnf ]; then
-  dnf install -y wireguard-tools iptables iproute iputils curl ca-certificates git make gcc libpcap-devel nmap-ncat tcpdump python3 >/dev/null 2>&1 || true
+  dnf install -y wireguard-tools iptables iproute iputils curl ca-certificates nmap-ncat python3 >/dev/null 2>&1 || true
 elif [ "$PM" = yum ]; then
-  yum install -y wireguard-tools iptables iproute iputils curl ca-certificates git make gcc libpcap-devel nmap-ncat tcpdump python3 >/dev/null 2>&1 || true
+  yum install -y wireguard-tools iptables iproute iputils curl ca-certificates nmap-ncat python3 >/dev/null 2>&1 || true
 elif [ "$PM" = pacman ]; then
-  pacman -Sy --noconfirm wireguard-tools iptables iproute2 iputils curl ca-certificates git base-devel libpcap netcat tcpdump python >/dev/null 2>&1 || true
+  pacman -Sy --noconfirm wireguard-tools iptables iproute2 iputils curl ca-certificates netcat python >/dev/null 2>&1 || true
 fi
 modprobe wireguard >/dev/null 2>&1 || true
 # Never leave remote SSH disabled after dependency/install operations.
@@ -46,6 +59,7 @@ REMOTE
     return 1
   fi
 }
+
 
 generate_remote_pubkey(){
   # Robust remote pubkey retrieval:

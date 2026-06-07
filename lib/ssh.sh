@@ -237,12 +237,16 @@ ssh_ensure_sshpass_for_password(){
   case "$pm" in
     apt)
       export DEBIAN_FRONTEND=noninteractive
-      DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none         apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update -y >/dev/null 2>&1 || true
-      DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none         apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y sshpass >/dev/null 2>&1 || true
+      # Lightweight: try install first; refresh apt lists only if sshpass is not resolvable.
+      DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none         apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install --no-install-recommends -y sshpass >/dev/null 2>&1 || true
+      if ! have_cmd sshpass; then
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none           apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update -y >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none           apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install --no-install-recommends -y sshpass >/dev/null 2>&1 || true
+      fi
       if ! have_cmd sshpass && command -v add-apt-repository >/dev/null 2>&1; then
         add-apt-repository -y universe >/dev/null 2>&1 || true
         DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none           apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 update -y >/dev/null 2>&1 || true
-        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none           apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install -y sshpass >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none           apt-get -o Dpkg::Use-Pty=0 -o APT::Color=0 install --no-install-recommends -y sshpass >/dev/null 2>&1 || true
       fi
       ;;
     dnf) dnf install -y sshpass >/dev/null 2>&1 || true ;;

@@ -296,13 +296,14 @@ azhdar_apt_wait_locks_local(){
 }
 
 azhdar_apt_self_heal_local(){
-  # Aggressive automatic repair for broken/half-configured apt states.
+  # Automatic repair for broken/half-configured apt states.
+  # Keep this lightweight: do not run apt update here. Package-list refresh is
+  # done only by apt_install_retry when an actual install cannot resolve packages.
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
   azhdar_apt_force_unlock_local || true
   azhdar_apt_wait_locks_local || true
   dpkg --configure -a >/dev/null 2>&1 || true
   azhdar_apt_get -f install -y >/dev/null 2>&1 || true
-  azhdar_apt_get update -y >/dev/null 2>&1 || true
   dpkg --configure -a >/dev/null 2>&1 || true
   azhdar_apt_get -f install -y >/dev/null 2>&1 || true
 }
@@ -485,7 +486,7 @@ if [[ "$okcod" == "no" ]]; then
 fi
 
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
-azhdar_apt_get update -y >/dev/null 2>&1 || true
+# No unconditional apt update here; build-dep installer refreshes package lists only if needed.
 
 # Ensure build deps for Mimic-DKMS (dkms + toolchain + matching headers)
 if ! have_cmd dkms || ! dpkg -s build-essential >/dev/null 2>&1 || [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
@@ -678,7 +679,6 @@ apt_repair(){
   apt_wait_locks || true
   dpkg --configure -a >/dev/null 2>&1 || true
   aptq -f install -y >/dev/null 2>&1 || true
-  aptq update -y >/dev/null 2>&1 || true
   dpkg --configure -a >/dev/null 2>&1 || true
   aptq -f install -y >/dev/null 2>&1 || true
 }
@@ -709,27 +709,28 @@ header_candidates(){
 }
 install_build_deps(){
   apt_repair || true
-  if aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool "linux-headers-$(uname -r)" >/dev/null 2>&1; then
+  if aptq install --no-install-recommends -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool "linux-headers-$(uname -r)" >/dev/null 2>&1; then
     return 0
   fi
-  echo "[i] Remote apt build deps failed once; running self-heal and header fallback..."
+  echo "[i] Remote apt build deps failed once; refreshing package list once and trying header fallback..."
+  aptq update -y >/dev/null 2>&1 || true
   apt_repair || true
-  aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
+  aptq install --no-install-recommends -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
   for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
-    aptq install -y "$hdr" >/dev/null 2>&1 && break || true
+    aptq install --no-install-recommends -y "$hdr" >/dev/null 2>&1 && break || true
   done
   if command -v dkms >/dev/null 2>&1 && dpkg -s build-essential >/dev/null 2>&1; then
     return 0
   fi
   echo "[i] Remote apt is still inconsistent; avoiding full-upgrade during AZHDAR install and retrying only required build deps..."
   apt_repair || true
-  aptq install -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
+  aptq install --no-install-recommends -y dkms build-essential xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
   for hdr in $(header_candidates | awk 'NF && !seen[$0]++'); do
-    aptq install -y "$hdr" >/dev/null 2>&1 && break || true
+    aptq install --no-install-recommends -y "$hdr" >/dev/null 2>&1 && break || true
   done
   command -v dkms >/dev/null 2>&1 && dpkg -s build-essential >/dev/null 2>&1
 }
-aptq update -y >/dev/null 2>&1 || true
+# No unconditional remote apt update; install_build_deps refreshes only after a real failure.
 if ! command -v dkms >/dev/null 2>&1 || ! dpkg -s build-essential >/dev/null 2>&1; then
   echo "[i] Installing/repairing DKMS build deps (dkms, build-essential, headers)..."
 fi

@@ -72,7 +72,7 @@ Mimic fallback mirror name: m0000hamad (`https://dl.digitsell.shop/share/Wf-XKNL
 - Shows the real `mimic@<wan>` systemd status/journal when Mimic fails.
 - Caps automatic safe repair passes so the UI does not appear stuck.
 
-## v3.2.20 hotfix
+## v3.2.21 hotfix
 - Pin Mimic package selection to stable 0.7.0 mirror by default.
 - Avoid unattended/full-upgrade side effects during Mimic install.
 - Suppress maintainer service restarts during apt/dpkg repair.
