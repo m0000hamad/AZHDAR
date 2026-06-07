@@ -113,10 +113,78 @@ chmod 755 /etc/mimic /var/lib/mimic /run/mimic 2>/dev/null || true
 systemctl daemon-reload >/dev/null 2>&1 || true
 exit 0
 REMOTE
+
 }
 
+# Some Mimic .deb/package states can leave the binary installed while the
+# systemd template unit is missing. In that case systemctl reports
+# mimic@<if> as "not-found" and the WireGuard tunnel never comes up even
+# though Mimic package/module checks passed. Create a minimal root-run unit as
+# a safe fallback; only do this when the package did not provide mimic@.service.
+azhdar_mimic_ensure_unit_local(){
+  command -v systemctl >/dev/null 2>&1 || return 0
+  if systemctl cat mimic@.service >/dev/null 2>&1 || \
+     [[ -f /etc/systemd/system/mimic@.service || -f /usr/lib/systemd/system/mimic@.service || -f /lib/systemd/system/mimic@.service ]]; then
+    return 0
+  fi
+  local exe=""
+  exe="$(command -v mimic 2>/dev/null || true)"
+  [[ -n "$exe" ]] || exe="/usr/sbin/mimic"
+  [[ -x "$exe" ]] || return 1
+  mkdir -p /etc/systemd/system /etc/mimic /run/mimic /var/lib/mimic 2>/dev/null || true
+  cat >/etc/systemd/system/mimic@.service <<EOF
+[Unit]
+Description=Start Mimic on %i
+After=network-online.target
+Wants=network-online.target
 
+[Service]
+Type=simple
+ExecStart=${exe} run %i -F /etc/mimic/%i.conf
+Restart=on-failure
+RestartSec=1
+LimitNOFILE=1048576
 
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 644 /etc/systemd/system/mimic@.service 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+azhdar_mimic_ensure_unit_remote(){
+  ssh_run_stdin_env_root_best_effort <<'REMOTE' >/dev/null 2>&1 || true
+set +e
+if ! command -v systemctl >/dev/null 2>&1; then exit 0; fi
+if systemctl cat mimic@.service >/dev/null 2>&1 || \
+   [ -f /etc/systemd/system/mimic@.service ] || [ -f /usr/lib/systemd/system/mimic@.service ] || [ -f /lib/systemd/system/mimic@.service ]; then
+  exit 0
+fi
+exe="$(command -v mimic 2>/dev/null || true)"
+[ -n "$exe" ] || exe="/usr/sbin/mimic"
+[ -x "$exe" ] || exit 1
+mkdir -p /etc/systemd/system /etc/mimic /run/mimic /var/lib/mimic 2>/dev/null || true
+cat >/etc/systemd/system/mimic@.service <<EOF
+[Unit]
+Description=Start Mimic on %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${exe} run %i -F /etc/mimic/%i.conf
+Restart=on-failure
+RestartSec=1
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 644 /etc/systemd/system/mimic@.service 2>/dev/null || true
+systemctl daemon-reload >/dev/null 2>&1 || true
+exit 0
+REMOTE
+}
 
 azhdar_cmd_timeout_local(){
   # usage: azhdar_cmd_timeout_local <seconds> <command> [args...]
@@ -305,6 +373,7 @@ mimic_restart_local_checked(){
   [[ -f "$cfg" ]] || { err "Mimic config not found: ${cfg}"; return 1; }
 
   mimic_conf_force_skb "$cfg"
+  azhdar_mimic_ensure_unit_local || true
   azhdar_mimic_ensure_service_user_local || true
   systemctl daemon-reload >/dev/null 2>&1 || true
   AZHDAR_MIMIC_SERVICE_START_FAST=1 azhdar_mimic_ensure_kernel_module_local || true
@@ -318,6 +387,7 @@ mimic_restart_local_checked(){
 
   warn "Local Mimic failed on ${wan}; clearing stale locks, repairing module/account, and retrying."
   mimic_conf_force_skb "$cfg"
+  azhdar_mimic_ensure_unit_local || true
   azhdar_mimic_ensure_service_user_local || true
   AZHDAR_MIMIC_SERVICE_START_FAST=1 azhdar_mimic_ensure_kernel_module_local || true
   azhdar_mimic_clear_runtime_local "$wan" || true
@@ -368,6 +438,38 @@ else
   awk 'BEGIN{done=0} {print; if(!done && $0 ~ /^log\.verbosity[[:space:]]*=/){print "xdp_mode = skb"; done=1}} END{if(!done) print "xdp_mode = skb"}' "$CFG" >"${CFG}.tmp.$$" 2>/dev/null && mv -f "${CFG}.tmp.$$" "$CFG" || true
 fi
 chmod 644 "$CFG" 2>/dev/null || true
+# Repair missing systemd template. Some partial installs leave /usr/sbin/mimic
+# available but no mimic@.service, so systemctl reports the unit as not-found
+# and the real tunnel never starts.
+ensure_mimic_unit(){
+  if ! command -v systemctl >/dev/null 2>&1; then return 0; fi
+  if systemctl cat mimic@.service >/dev/null 2>&1 || [ -f /etc/systemd/system/mimic@.service ] || [ -f /usr/lib/systemd/system/mimic@.service ] || [ -f /lib/systemd/system/mimic@.service ]; then
+    return 0
+  fi
+  exe="$(command -v mimic 2>/dev/null || true)"
+  [ -n "$exe" ] || exe="/usr/sbin/mimic"
+  [ -x "$exe" ] || return 1
+  mkdir -p /etc/systemd/system /etc/mimic /run/mimic /var/lib/mimic 2>/dev/null || true
+  cat >/etc/systemd/system/mimic@.service <<EOF_UNIT
+[Unit]
+Description=Start Mimic on %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${exe} run %i -F /etc/mimic/%i.conf
+Restart=on-failure
+RestartSec=1
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF_UNIT
+  chmod 644 /etc/systemd/system/mimic@.service 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+ensure_mimic_unit || true
 # Repair missing service account before start; fixes status=217/USER after partial/old Mimic installs.
 unit="$(systemctl cat mimic@.service 2>/dev/null || cat /etc/systemd/system/mimic@.service /usr/lib/systemd/system/mimic@.service /lib/systemd/system/mimic@.service 2>/dev/null || true)"
 if [ -n "$unit" ]; then
