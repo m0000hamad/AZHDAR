@@ -87,10 +87,120 @@ remove_profile_forward_rules_by_match_local(){
 azhdar_firewall_safety_local(){
   # Safe to run repeatedly. Run before applying/saving firewall rules and at boot.
   normalize_ir_ssh_port
+  azhdar_ensure_system_ssh_local || true
   protect_ir_ssh_port || true
   allow_ir_ssh_port_local || true
   remove_dnat_for_port_local "${IR_SSH_PORT}" || true
   remove_rst_drop_for_port_local "${IR_SSH_PORT}" || true
+}
+
+
+normalize_out_ssh_port(){
+  OUT_SSH_PORT="${OUT_SSH_PORT:-22}"
+  if ! _is_valid_port "$OUT_SSH_PORT"; then
+    warn "Invalid OUT_SSH_PORT='${OUT_SSH_PORT}', falling back to 22."
+    OUT_SSH_PORT="22"
+  fi
+}
+
+azhdar_ssh_guard_local(){
+  # Emergency management guard for the IR host. It is intentionally safe and
+  # idempotent: do not restart an active SSH daemon; only unmask/enable/start
+  # when inactive, open the management port, and remove NAT/raw rules that can
+  # steal or break SSH after tunnel/firewall changes.
+  normalize_ir_ssh_port || true
+  azhdar_ensure_system_ssh_local || true
+  allow_ir_ssh_port_local || true
+  local p="${IR_SSH_PORT:-22}"
+  _is_valid_port "$p" || return 0
+  iptables -C OUTPUT -p tcp --sport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
+  iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
+  iptables -C OUTPUT -p tcp --sport "$p" -j ACCEPT 2>/dev/null || \
+  iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT 2>/dev/null || true
+  remove_dnat_for_port_local "$p" || true
+  remove_rst_drop_for_port_local "$p" || true
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    firewall-cmd --add-port="${p}/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port="${p}/tcp" >/dev/null 2>&1 || true
+  fi
+}
+
+azhdar_ssh_guard_remote(){
+  # Keep the OUT management SSH reachable before/after remote firewall/service
+  # changes. Never restarts active sshd; only starts/enables it if inactive.
+  [[ "${WG_MODE:-classic}" == "account" ]] && return 0
+  normalize_out_ssh_port || true
+  local p="${OUT_SSH_PORT:-22}"
+  _is_valid_port "$p" || return 0
+  ssh_run_stdin_env_root_best_effort "OUT_SSH_PORT=${p}" "RULE_TAG=${RULE_TAG:-$TAG}" <<'REMOTE' >/dev/null 2>&1 || true
+set +e
+p="${OUT_SSH_PORT:-22}"
+case "$p" in ''|*[!0-9]* ) p=22;; esac
+if [ "$p" -lt 1 ] || [ "$p" -gt 65535 ]; then p=22; fi
+comment="${RULE_TAG:-AZHDAR}-SSH-GUARD"
+
+# Firewall first: keep current SSH replies and new SSH connections accepted.
+iptables -C INPUT -p tcp --dport "$p" -j ACCEPT -m comment --comment "$comment" 2>/dev/null || \
+iptables -I INPUT 1 -p tcp --dport "$p" -j ACCEPT -m comment --comment "$comment" 2>/dev/null || \
+iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || \
+iptables -I INPUT 1 -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
+iptables -C OUTPUT -p tcp --sport "$p" -j ACCEPT -m comment --comment "$comment" 2>/dev/null || \
+iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT -m comment --comment "$comment" 2>/dev/null || \
+iptables -C OUTPUT -p tcp --sport "$p" -j ACCEPT 2>/dev/null || \
+iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT 2>/dev/null || true
+
+# Remove rules that would steal SSH before sshd sees it or drop SSH RST replies.
+iptables -t nat -S PREROUTING 2>/dev/null | grep -F -- "--dport ${p}" | grep -E -- ' -p tcp |^-A [^ ]+ -p tcp ' | grep -E -- ' -j (DNAT|REDIRECT)( |$)' | while read -r line; do
+  cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+done
+iptables -t raw -S OUTPUT 2>/dev/null | grep -F -- "--sport ${p}" | grep -F -- "--tcp-flags RST RST" | grep -F -- "-j DROP" | while read -r line; do
+  cmd="${line/-A /-D }"; iptables -t raw $cmd 2>/dev/null || true
+done
+
+if command -v ufw >/dev/null 2>&1; then ufw allow "${p}/tcp" >/dev/null 2>&1 || true; fi
+if command -v firewall-cmd >/dev/null 2>&1; then
+  firewall-cmd --add-port="${p}/tcp" >/dev/null 2>&1 || true
+  firewall-cmd --permanent --add-port="${p}/tcp" >/dev/null 2>&1 || true
+fi
+
+# Service guard. Do not restart an already-active sshd. Test config before
+# starting/reloading anything, and tolerate images using ssh vs sshd naming.
+sshd_bin=""
+for b in /usr/sbin/sshd /usr/local/sbin/sshd sshd; do
+  if command -v "$b" >/dev/null 2>&1; then sshd_bin="$(command -v "$b")"; break; fi
+  [ -x "$b" ] && { sshd_bin="$b"; break; }
+done
+if [ -n "$sshd_bin" ]; then "$sshd_bin" -t >/tmp/azhdar-sshd-guard-test.log 2>&1 || exit 0; fi
+if command -v systemctl >/dev/null 2>&1; then
+  for svc in ssh.service sshd.service; do
+    systemctl list-unit-files "$svc" >/dev/null 2>&1 || systemctl status "$svc" >/dev/null 2>&1 || continue
+    systemctl unmask "$svc" >/dev/null 2>&1 || true
+    systemctl enable "$svc" >/dev/null 2>&1 || true
+    systemctl is-active --quiet "$svc" || systemctl start "$svc" >/dev/null 2>&1 || true
+  done
+  for svc in ssh.socket sshd.socket; do
+    systemctl list-unit-files "$svc" >/dev/null 2>&1 || systemctl status "$svc" >/dev/null 2>&1 || continue
+    systemctl unmask "$svc" >/dev/null 2>&1 || true
+    systemctl enable "$svc" >/dev/null 2>&1 || true
+    systemctl is-active --quiet "$svc" || systemctl start "$svc" >/dev/null 2>&1 || true
+  done
+fi
+REMOTE
+}
+
+azhdar_ssh_guard_all(){
+  azhdar_ssh_guard_local || true
+  azhdar_ssh_guard_remote || true
+}
+
+ssh_guard_remote_conflict(){
+  [[ "${WG_MODE:-classic}" == "account" ]] && return 0
+  normalize_out_ssh_port || true
+  if [[ -n "${WG_PORT:-}" && -n "${OUT_SSH_PORT:-}" && "${WG_PORT}" == "${OUT_SSH_PORT}" ]]; then
+    err "WG_PORT ${WG_PORT} equals OUT SSH port ${OUT_SSH_PORT}; refusing because it can lock you out of the OUT server. Choose another tunnel public port."
+    return 1
+  fi
+  return 0
 }
 
 # -------------------- Firewall / forwarding --------------------
@@ -118,6 +228,8 @@ add_rst_drop_local(){ setup_rst_drop_local; }
 add_rst_drop_remote(){ setup_rst_drop_remote; }
 
 allow_mimic_port_remote(){
+  ssh_guard_remote_conflict || return 1
+  azhdar_ssh_guard_remote || true
   step "Open remote port (best-effort)"
   ssh_run_stdin_env_root_best_effort "WG_PORT=${WG_PORT}" "RULE_TAG=${RULE_TAG}" <<'REMOTE' >/dev/null 2>&1 || true
 set -euo pipefail
@@ -380,6 +492,8 @@ setup_rst_drop_local(){
 }
 
 setup_rst_drop_remote(){
+  ssh_guard_remote_conflict || return 1
+  azhdar_ssh_guard_remote || true
   step "Drop TCP RST (remote) for fake TCP port (best-effort)"
   ssh_run_stdin_env_root_best_effort "WG_PORT=${WG_PORT}" "RULE_TAG=${RULE_TAG}" <<'REMOTE' >/dev/null 2>&1 || true
 set -euo pipefail
@@ -476,6 +590,7 @@ persist_iptables_local(){
   # poison the IR server after reboot and force a rebuild. The boot service now
   # reconstructs required runtime rules from the profile instead.
   azhdar_firewall_safety_local || true
+  azhdar_ssh_guard_local || true
   if [[ "${AZHDAR_PERSIST_IPTABLES:-0}" != "1" && "${FIREWALL_PERSIST:-0}" != "1" ]]; then
     info "Skipping iptables persistence (safe default). Runtime rules will be rebuilt by azhdar.service at boot."
     return 0

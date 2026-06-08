@@ -25,6 +25,7 @@ azhdar_boot(){
   # timed out while stale iptables/systemd state was restored. Remote services
   # are enabled during install and should boot on the OUT host independently.
   azhdar_firewall_safety_local || true
+  azhdar_ssh_guard_local || true
 
   # Rebuild local runtime from the selected profile only.
   if [[ "${WG_MODE:-classic}" != "account" ]]; then
@@ -46,7 +47,9 @@ azhdar_boot(){
     setup_forward_ir || true
   fi
 
+  azhdar_ssh_guard_local || true
   start_services_local || true
+  azhdar_ssh_guard_local || true
   exit 0
 }
 

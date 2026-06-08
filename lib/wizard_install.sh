@@ -669,13 +669,16 @@ fi
   info "IR pubkey : ${IR_PUBKEY}"
   info "OUT pubkey: ${OUT_PUBKEY}"
 
-  # Firewall
+  # Firewall / SSH safety first. Keep both management SSH ports alive before
+  # any tunnel/NAT/raw rule is applied.
+  azhdar_ssh_guard_all || true
   azhdar_firewall_safety_local && ok "RESULT: IR/local SSH safety firewall check succeeded." || warn "RESULT: IR/local SSH safety firewall check was not fully confirmed."
   allow_mimic_port_local && ok "RESULT: IR/local tunnel port rule applied." || warn "RESULT: IR/local tunnel port rule NOT confirmed."
   allow_mimic_port_remote && ok "RESULT: OUT/remote tunnel port rule applied." || warn "RESULT: OUT/remote tunnel port rule NOT confirmed."
   allow_vless_on_remote_wg && ok "RESULT: OUT/remote WG ingress rule applied/skipped successfully." || warn "RESULT: OUT/remote WG ingress rule NOT confirmed."
   setup_rst_drop_remote && ok "RESULT: OUT/remote RST-drop rule applied." || warn "RESULT: OUT/remote RST-drop rule NOT confirmed."
   setup_rst_drop_local && ok "RESULT: IR/local RST-drop rule applied." || warn "RESULT: IR/local RST-drop rule NOT confirmed."
+  azhdar_ssh_guard_all || true
 
   # Write configs
   if ( write_mimic_conf_remote ); then
@@ -714,10 +717,12 @@ fi
   fi
 
   # Start services
+  azhdar_ssh_guard_all || true
   start_services_remote && ok "RESULT: OUT/remote services start requested." || warn "RESULT: OUT/remote services start NOT confirmed."
   start_services_local && ok "RESULT: IR/local services start requested." || warn "RESULT: IR/local services start NOT confirmed."
   restart_services_remote && ok "RESULT: OUT/remote services restart requested." || warn "RESULT: OUT/remote services restart NOT confirmed."
   restart_services_local && ok "RESULT: IR/local services restart requested." || warn "RESULT: IR/local services restart NOT confirmed."
+  azhdar_ssh_guard_all || true
 
   # Optional forward rules
   azhdar_firewall_safety_local || true

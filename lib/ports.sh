@@ -337,6 +337,7 @@ ports_wg_port_candidate_ok(){
   [[ "$p" =~ ^[0-9]{1,5}$ ]] || return 1
   (( p >= 1 && p <= 65535 )) || return 1
   [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]] && return 1
+  [[ -n "${OUT_SSH_PORT:-}" && "$p" == "${OUT_SSH_PORT}" ]] && return 1
   [[ -n "${PORT_REG_PROFILE[tcp:${p}]:-}" ]] && return 1
   [[ -n "${PORT_REG_PROFILE[udp:${p}]:-}" ]] && return 1
   ports_csv_contains "${FORWARD_TCP_PORTS:-}" "$p" && return 1
@@ -584,6 +585,15 @@ ports_validate_current_or_warn(){
     local sug_ir; sug_ir="$(suggest_wg_port || true)"
     [[ -z "$sug_ir" || "$sug_ir" == "$WG_PORT" ]] && sug_ir="$(ports_suggest_wg_free_near "${WG_PORT}" || true)"
     [[ -n "$sug_ir" && "$sug_ir" != "$WG_PORT" ]] && warn "Suggested free tunnel port: ${sug_ir}"
+    bad=1
+  fi
+
+  # Never allow the public tunnel port to take over the OUT SSH management port.
+  if [[ -n "${WG_PORT:-}" && -n "${OUT_SSH_PORT:-}" && "${WG_PORT:-}" == "${OUT_SSH_PORT}" ]]; then
+    warn "WG_PORT ${WG_PORT} is the OUT SSH management port. Choose another tunnel port to avoid OUT SSH lockout."
+    local sug_out_ssh; sug_out_ssh="$(suggest_wg_port || true)"
+    [[ -z "$sug_out_ssh" || "$sug_out_ssh" == "$WG_PORT" ]] && sug_out_ssh="$(ports_suggest_wg_free_near "${WG_PORT}" || true)"
+    [[ -n "$sug_out_ssh" && "$sug_out_ssh" != "$WG_PORT" ]] && warn "Suggested free tunnel port: ${sug_out_ssh}"
     bad=1
   fi
 

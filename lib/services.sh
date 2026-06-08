@@ -34,9 +34,11 @@ restart_svc_remote(){
     status_cache_invalidate || true
     return 0
   fi
+  services_guard_remote_ports || return 1
   local qsvc
   qsvc="$(printf '%q' "$svc")"
   ssh_run_root_best_effort "systemctl daemon-reload >/dev/null 2>&1 || true; systemctl restart ${qsvc} >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
+  azhdar_ssh_guard_remote || true
   status_cache_invalidate || true
   return 0
 }
@@ -48,6 +50,13 @@ services_guard_local_ports(){
     return 1
   fi
   azhdar_firewall_safety_local || true
+  azhdar_ssh_guard_local || true
+}
+
+services_guard_remote_ports(){
+  [[ "${WG_MODE:-classic}" == "account" ]] && return 0
+  ssh_guard_remote_conflict || return 1
+  azhdar_ssh_guard_remote || true
 }
 
 svc_wg(){ echo "wg-quick@${WG_IF}"; }
@@ -65,6 +74,7 @@ restart_wg_only_remote(){
     status_cache_invalidate || true
     return 0
   fi
+  services_guard_remote_ports || return 1
   step "Restart WireGuard only (remote)"
   ssh_run_root_best_effort "systemctl restart wg-quick@${WG_IF} >/dev/null 2>&1 || true" >/dev/null 2>&1 || true
   ok "Remote WireGuard restarted (best-effort)."
@@ -78,6 +88,7 @@ start_services_local(){
     step "Start Services Local"
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl enable --now "$(svc_wg)" >/dev/null 2>&1 || true
+    azhdar_ssh_guard_local || true
     ok "Local WireGuard started."
     status_cache_invalidate || true
     return 0
@@ -87,6 +98,7 @@ start_services_local(){
   enable_mimic_local && mimic_ok=1 || warn "Local Mimic service did not start cleanly."
   systemctl daemon-reload >/dev/null 2>&1 || true
   systemctl enable --now "$(svc_wg)" >/dev/null 2>&1 && wg_ok=1 || warn "Local WireGuard service did not start cleanly."
+  azhdar_ssh_guard_local || true
   status_cache_invalidate || true
   if (( mimic_ok == 1 && wg_ok == 1 )); then
     ok "Local services started."
@@ -101,10 +113,12 @@ start_services_remote(){
     status_cache_invalidate || true
     return 0
   fi
+  services_guard_remote_ports || return 1
   step "Start services (remote)"
   local mimic_ok=0 wg_ok=0
   enable_mimic_remote && mimic_ok=1 || warn "Remote Mimic service did not start cleanly."
   ssh_run_root_best_effort "systemctl enable --now wg-quick@${WG_IF} >/dev/null 2>&1" >/dev/null 2>&1 && wg_ok=1 || warn "Remote WireGuard service did not start cleanly."
+  azhdar_ssh_guard_remote || true
   status_cache_invalidate || true
   if (( mimic_ok == 1 && wg_ok == 1 )); then
     ok "Remote services started (best-effort)."
@@ -119,6 +133,7 @@ restart_services_local(){
     step "Restart Services Local"
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl restart "$(svc_wg)" >/dev/null 2>&1 || true
+    azhdar_ssh_guard_local || true
     ok "Local WireGuard restarted."
     status_cache_invalidate || true
     return 0
@@ -128,6 +143,7 @@ restart_services_local(){
   wan="$(mimic_detect_local_if 2>/dev/null || true)"
   [[ -n "$wan" ]] && mimic_restart_local_checked "$wan" && mimic_ok=1 || warn "Local Mimic restart was not confirmed."
   systemctl restart "$(svc_wg)" >/dev/null 2>&1 && wg_ok=1 || warn "Local WireGuard restart was not confirmed."
+  azhdar_ssh_guard_local || true
   status_cache_invalidate || true
   if (( mimic_ok == 1 && wg_ok == 1 )); then
     ok "Local services restarted."
@@ -142,6 +158,7 @@ restart_services_remote(){
     status_cache_invalidate || true
     return 0
   fi
+  services_guard_remote_ports || return 1
   step "Restart services (remote)"
   local wan="${REMOTE_WAN_IF:-}" mimic_ok=0 wg_ok=0
   if [[ -z "$wan" ]]; then
@@ -149,6 +166,7 @@ restart_services_remote(){
   fi
   [[ -n "$wan" ]] && mimic_remote_restart_checked "$wan" && mimic_ok=1 || warn "Remote Mimic restart was not confirmed."
   ssh_run_root_best_effort "systemctl restart wg-quick@${WG_IF} >/dev/null 2>&1" >/dev/null 2>&1 && wg_ok=1 || warn "Remote WireGuard restart was not confirmed."
+  azhdar_ssh_guard_remote || true
   status_cache_invalidate || true
   if (( mimic_ok == 1 && wg_ok == 1 )); then
     ok "Remote services restarted (best-effort)."
