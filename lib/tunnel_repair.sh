@@ -380,6 +380,7 @@ azhdar_repair_tunnel(){
 
   _tunnel_repair_log_msg "failed"
   err "Tunnel repair finished but tunnel is still disconnected."
+  azhdar_port_filter_probe || true
   echo -e "${DIM}Log:${RST} $(_tunnel_repair_log)"
   [[ "$mode" == "manual" ]] && { echo; diagnostics_full || true; }
   return 1

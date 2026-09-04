@@ -27,6 +27,59 @@ wg_transfer_stats(){
   wg show "$WG_IF" transfer 2>/dev/null | awk 'NR==1{print $2" "$3}' || echo "0 0"
 }
 
+azhdar_port_filter_probe(){
+  # Detect the failure mode where every configuration value is correct but the
+  # tunnel port is blocked on the path between the two servers. Signature: we
+  # keep transmitting, nothing ever comes back, and no handshake completes,
+  # while the OUT host itself still answers on its SSH port. Repair loops
+  # cannot fix that, so say so instead of retrying forever.
+  local rx tx hs
+  read -r rx tx <<<"$(wg_transfer_stats)"
+  hs="$(wg_handshake_epoch)"
+  [[ "${rx:-0}" =~ ^[0-9]+$ ]] || rx=0
+  [[ "${tx:-0}" =~ ^[0-9]+$ ]] || tx=0
+
+  (( tx > 0 )) || return 1
+  (( rx == 0 )) || return 1
+  [[ -z "$hs" || "$hs" == "0" ]] || return 1
+
+  local peer_ip="${OUT_PUBLIC_IP:-${OUT_SSH_HOST:-}}"
+  [[ -n "$peer_ip" ]] || return 1
+  local ssh_port="${OUT_SSH_PORT:-22}"
+  local host_up=0
+  if timeout 6 bash -c "exec 3<>/dev/tcp/${peer_ip}/${ssh_port}" 2>/dev/null; then
+    host_up=1
+  fi
+
+  echo
+  warn "Tunnel port ${WG_PORT:-?} looks blocked on the path to ${peer_ip}."
+  echo -e "${DIM}Evidence:${RST}"
+  echo "  - WireGuard sent ${tx} bytes, received ${rx}, and never completed a handshake."
+  if (( host_up != 1 )); then
+    echo "  - ${peer_ip} did not answer on TCP ${ssh_port} either, so check the OUT server itself first."
+    return 0
+  fi
+  echo "  - ${peer_ip} answers on TCP ${ssh_port}, so the OUT server is up and routable."
+  echo
+  echo "One-way traffic to a host that is otherwise reachable almost always means"
+  echo "the port is filtered for this pair of addresses rather than misconfigured."
+  echo "Moving the tunnel to another port usually restores it. Clients are not"
+  echo "affected: only the port the two servers use between themselves changes."
+
+  local c csv=",${FORWARD_TCP_PORTS:-},${FORWARD_UDP_PORTS:-},"
+  local suggestions=""
+  for c in "${WG_PORT_CANDIDATES[@]}"; do
+    [[ "$c" == "${WG_PORT:-}" ]] && continue
+    [[ "$c" == "${IR_SSH_PORT:-22}" ]] && continue
+    [[ "$csv" == *",${c},"* ]] && continue
+    suggestions+="${c} "
+  done
+  [[ -n "$suggestions" ]] && { echo; echo -e "${DIM}Candidate ports:${RST} ${suggestions}"; }
+  echo "Change it from the profile settings so WireGuard, Mimic and the firewall"
+  echo "are rewritten together on both sides."
+  return 0
+}
+
 wg_handshake_state(){
   local hs="$1"
   [[ -n "$hs" && "$hs" != "0" ]] || { echo "no-handshake"; return; }

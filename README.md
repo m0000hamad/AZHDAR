@@ -1,5 +1,20 @@
 # AZHDAR (modular) v3.2.8
 
+## AZHDAR v3.2.29 forwarding and filtered-port fixes
+
+- Fixes stale DNAT rules surviving a destination change. `setup_forward_ir` only
+  checked for a rule matching the *current* destination, so changing the tunnel
+  IP or the node port left the previous rule in place. Because `PREROUTING` is
+  first-match-wins, an obsolete rule could keep winning while the profile
+  reported the new destination, sending client traffic to a dead port. Each
+  apply now clears existing DNAT rules for the port first, for TCP and UDP.
+- Adds `azhdar_port_filter_probe`, reported when a repair pass ends with the
+  tunnel still down. When WireGuard keeps transmitting, never receives a byte,
+  never completes a handshake, and the OUT host still answers on its SSH port,
+  the tunnel port is blocked on the path rather than misconfigured. Repair
+  cannot fix that, so the tool now says so and suggests unused candidate ports
+  instead of looping.
+
 ## AZHDAR v3.2.8 Smart Wizard
 
 Changes in this build:

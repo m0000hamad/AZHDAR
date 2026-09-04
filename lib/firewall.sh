@@ -57,6 +57,14 @@ remove_dnat_for_port_local(){
   iptables -t nat -S PREROUTING 2>/dev/null |     grep -F -- "--dport ${port}" |     grep -E -- ' -p tcp |^-A [^ ]+ -p tcp ' |     grep -E -- ' -j (DNAT|REDIRECT)( |$)' |     _iptables_delete_lines nat || true
 }
 
+remove_dnat_udp_for_port_local(){
+  # UDP counterpart of remove_dnat_for_port_local. Same reasoning: stale rules
+  # can be tagged or untagged, so match on the port and target instead.
+  local port="${1:-}"
+  _is_valid_port "$port" || return 0
+  iptables -t nat -S PREROUTING 2>/dev/null | grep -F -- "--dport ${port}" | grep -E -- ' -p udp |^-A [^ ]+ -p udp ' | grep -E -- ' -j (DNAT|REDIRECT)( |$)' | _iptables_delete_lines nat || true
+}
+
 remove_rst_drop_for_port_local(){
   # If a previous/bad profile used the SSH port as WG_PORT, its raw OUTPUT
   # RST-drop rule can remain. Remove it for the protected SSH port.
@@ -365,6 +373,11 @@ setup_forward_ir(){
       remove_dnat_for_port_local "$p" || true
       continue
     fi
+    # PREROUTING is first-match-wins, and -C only matches the exact current
+    # destination. Without this removal a changed tunnel IP or node port leaves
+    # the previous rule in place, and whichever rule sits on top silently wins
+    # while the profile still reports the new destination.
+    remove_dnat_for_port_local "$p" || true
     iptables -t nat -C PREROUTING -p tcp --dport "$p" -j DNAT --to-destination "${_dst_ip}:${VLESS_DST_PORT}" -m comment --comment "${RULE_TAG:-$TAG}" 2>/dev/null || \
     iptables -t nat -I PREROUTING -p tcp --dport "$p" -j DNAT --to-destination "${_dst_ip}:${VLESS_DST_PORT}" -m comment --comment "${RULE_TAG:-$TAG}" 2>/dev/null || \
     iptables -t nat -I PREROUTING -p tcp --dport "$p" -j DNAT --to-destination "${_dst_ip}:${VLESS_DST_PORT}" 2>/dev/null || true
@@ -375,6 +388,7 @@ setup_forward_ir(){
   for p in "${udp_ports[@]}"; do
     p="$(echo "$p" | xargs)"
     [[ -z "$p" ]] && continue
+    remove_dnat_udp_for_port_local "$p" || true
     iptables -t nat -C PREROUTING -p udp --dport "$p" -j DNAT --to-destination "${_dst_ip}:${VLESS_DST_PORT}" -m comment --comment "${RULE_TAG:-$TAG}" 2>/dev/null || \
     iptables -t nat -I PREROUTING -p udp --dport "$p" -j DNAT --to-destination "${_dst_ip}:${VLESS_DST_PORT}" -m comment --comment "${RULE_TAG:-$TAG}" 2>/dev/null || \
     iptables -t nat -I PREROUTING -p udp --dport "$p" -j DNAT --to-destination "${_dst_ip}:${VLESS_DST_PORT}" 2>/dev/null || true
