@@ -1,4 +1,19 @@
-# AZHDAR (modular) v3.2.8
+# AZHDAR
+
+Modular manager for WireGuard over Mimic (eBPF) with isolated profiles.
+
+**License:** proprietary, all rights reserved. The source is publicly readable
+and you may run it on your own servers, but redistributing it, republishing it
+elsewhere, publishing derivative works, or any commercial use needs written
+permission first. See [LICENSE](LICENSE). Setup and hosting notes are in
+[HOSTING.md](HOSTING.md).
+
+Install:
+
+```bash
+curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/m0000hamad/AZHDAR/contents/install" | sudo bash
+```
+
 
 ## AZHDAR v3.2.30 fewer service restarts
 

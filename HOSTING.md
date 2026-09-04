@@ -9,31 +9,29 @@ That host is no longer required: everything now lives in this repository.
 | Old location | New location |
 | --- | --- |
 | `dl.digitsell.shop/api/public/dl/gZ1XGygF/install` | `install` (repository root) |
-| `dl.digitsell.shop/.../gZ1XGygF/azhdar-X.Y.Z.zip` | `dist/azhdar-X.Y.Z.zip` (all 30 releases, 3.1.15 – 3.2.28) |
+| `dl.digitsell.shop/.../gZ1XGygF/azhdar-X.Y.Z.zip` | `dist/azhdar-X.Y.Z.zip` (every release, 3.1.15 – 3.2.30) |
 | `dl.digitsell.shop/.../Wf-XKNL9/*.deb` | `assets/*.deb` |
 
 Each release is also a commit tagged `vX.Y.Z`, so `git show v3.2.14` gives the
 exact source of that build.
 
-## The repository is private
+## Installing
 
-Anonymous `curl | bash` no longer works. Every download path (installer,
-self-updater, Mimic asset mirror) authenticates with a read-only GitHub token.
-
-Create a **fine-grained personal access token** scoped to this repository only,
-with `Contents: Read-only`, then:
+The repository is public, so the installer needs no credentials:
 
 ```bash
-export AZHDAR_GH_TOKEN=github_pat_xxxxxxxx
-curl -fsSL \
-  -H "Authorization: Bearer $AZHDAR_GH_TOKEN" \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/m0000hamad/AZHDAR/contents/install" | sudo -E bash
+curl -fsSL -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/m0000hamad/AZHDAR/contents/install" | sudo bash
 ```
 
-The installer writes the token to `/etc/azhdar/gh.token` (mode 600) so the
-in-app updater and the Mimic mirror can reach the repository later without the
-environment variable. Delete that file to revoke access on a given server.
+The installer resolves the newest `dist/azhdar-X.Y.Z.zip` through the GitHub
+contents API and runs `scripts/install.sh` from it.
+
+`AZHDAR_GH_TOKEN` is still honoured and is only useful for raising the GitHub
+API rate limit, or if you run this from a private fork. When set, the installer
+saves it to `/etc/azhdar/gh.token` (mode 600) so the updater reuses it; delete
+that file to stop using it.
+
+Being publicly readable is not permission to redistribute. See LICENSE.
 
 ## Configuration
 

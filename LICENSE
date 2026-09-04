@@ -1,0 +1,80 @@
+AZHDAR — Proprietary License
+Copyright (c) 2026 m0000hamad. All rights reserved.
+
+This software and its documentation ("the Software") are made publicly
+readable for evaluation, study, and personal use. They are NOT open source
+and are NOT placed in the public domain. All rights not expressly granted
+below are reserved by the copyright holder.
+
+1. PERMITTED WITHOUT PERMISSION
+
+   a. Viewing and reading the source code.
+   b. Downloading and running the Software on servers you own or operate,
+      for your own use.
+   c. Making private local modifications for your own deployments.
+
+2. REQUIRES PRIOR WRITTEN PERMISSION
+
+   a. Redistributing the Software or any part of it, in original or modified
+      form, by any means and on any platform.
+   b. Publishing, mirroring, or re-uploading the Software, including uploads
+      to other code hosts, package registries, file shares, or websites.
+   c. Publishing derivative works, including translations, ports, rewrites,
+      and forks presented as separate projects.
+   d. Any commercial use, including selling, sublicensing, renting, or
+      offering the Software as part of a paid product or service.
+   e. Removing or altering copyright notices, license text, or attribution.
+
+   Requests are directed to the copyright holder through the repository's
+   issue tracker at https://github.com/m0000hamad/AZHDAR
+
+3. GITHUB PLATFORM RIGHTS
+
+   The repository is hosted publicly on GitHub. GitHub's Terms of Service
+   grant every GitHub user the right to view and to fork public repositories
+   through GitHub's own interface. That platform-level right is acknowledged
+   and is not restricted here. Nothing beyond it is granted: a fork created
+   under those terms does not carry a right to redistribute the Software
+   elsewhere, to publish it as a separate project, or to use it commercially.
+
+4. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES,
+   OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+   ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OF OR
+   OTHER DEALINGS IN THE SOFTWARE.
+
+5. THIRD-PARTY COMPONENTS
+
+   The Software installs and configures third-party components, including
+   WireGuard and Mimic (https://github.com/hack3ric/mimic). Those components
+   are covered by their own licenses and are not licensed under this document.
+   The .deb packages mirrored under assets/ are unmodified upstream builds and
+   remain under their original licenses.
+
+6. TERMINATION
+
+   Any use in breach of section 2 terminates the permissions in section 1
+   automatically.
+
+---
+
+خلاصه فارسی (متن انگلیسی بالا مرجع حقوقی است)
+
+این نرم‌افزار متن‌باز نیست. تمام حقوق محفوظ است.
+
+بدون اجازه مجاز است: خواندن کد، دانلود و اجرا روی سرورهای خودتان، و تغییر
+محلی برای استفاده شخصی.
+
+با اجازه کتبی قبلی: هر نوع بازنشر، آپلود دوباره در جای دیگر، انتشار نسخه
+تغییریافته یا ترجمه‌شده به‌عنوان پروژه‌ای جدا، هرگونه استفاده تجاری، و حذف
+یا تغییر اطلاعات کپی‌رایت.
+
+چون مخزن روی گیت‌هاب عمومی است، هر کاربر گیت‌هاب طبق شرایط خدمات آن پلتفرم
+حق دیدن و fork کردن دارد و این مجوز آن را محدود نمی‌کند؛ ولی fork حق بازنشر
+در جای دیگر، انتشار به‌عنوان پروژه مستقل، یا استفاده تجاری نمی‌دهد.
+
+برای درخواست اجازه، از بخش issues همین مخزن اقدام کنید.
