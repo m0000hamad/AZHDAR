@@ -132,6 +132,7 @@ restart_services_local(){
   if [[ "${WG_MODE:-classic}" == "account" ]]; then
     step "Restart Services Local"
     systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable "$(svc_wg)" >/dev/null 2>&1 || true
     systemctl restart "$(svc_wg)" >/dev/null 2>&1 || true
     azhdar_ssh_guard_local || true
     ok "Local WireGuard restarted."
@@ -142,6 +143,9 @@ restart_services_local(){
   local wan mimic_ok=0 wg_ok=0
   wan="$(mimic_detect_local_if 2>/dev/null || true)"
   [[ -n "$wan" ]] && mimic_restart_local_checked "$wan" && mimic_ok=1 || warn "Local Mimic restart was not confirmed."
+  # Enable as well as restart: callers no longer run start_services_local first,
+  # so this is what keeps the unit coming back after a reboot.
+  systemctl enable "$(svc_wg)" >/dev/null 2>&1 || true
   systemctl restart "$(svc_wg)" >/dev/null 2>&1 && wg_ok=1 || warn "Local WireGuard restart was not confirmed."
   azhdar_ssh_guard_local || true
   status_cache_invalidate || true
@@ -165,7 +169,7 @@ restart_services_remote(){
     wan="$(remote_detect_wan_if_quiet || true)"
   fi
   [[ -n "$wan" ]] && mimic_remote_restart_checked "$wan" && mimic_ok=1 || warn "Remote Mimic restart was not confirmed."
-  ssh_run_root_best_effort "systemctl restart wg-quick@${WG_IF} >/dev/null 2>&1" >/dev/null 2>&1 && wg_ok=1 || warn "Remote WireGuard restart was not confirmed."
+  ssh_run_root_best_effort "systemctl enable wg-quick@${WG_IF} >/dev/null 2>&1 || true; systemctl restart wg-quick@${WG_IF} >/dev/null 2>&1" >/dev/null 2>&1 && wg_ok=1 || warn "Remote WireGuard restart was not confirmed."
   azhdar_ssh_guard_remote || true
   status_cache_invalidate || true
   if (( mimic_ok == 1 && wg_ok == 1 )); then

@@ -1,5 +1,20 @@
 # AZHDAR (modular) v3.2.8
 
+## AZHDAR v3.2.30 fewer service restarts
+
+Install and repair restarted WireGuard and Mimic twice on both servers.
+
+`start_services_*` and `restart_services_*` were called back to back. For Mimic
+the two are literally the same code path: `enable_mimic_local` is just
+`mimic_restart_local_checked`, which is what the restart function calls too. For
+WireGuard the only thing the start call added was `systemctl enable`, so the
+unit was started and then immediately restarted.
+
+The restart functions now enable the unit themselves, and the redundant start
+calls are gone from the install wizard and from tunnel repair. Boot enablement
+is unchanged; both wizard modes and every repair pass now cycle each service
+once instead of twice, and the remote side does it in half the SSH round trips.
+
 ## AZHDAR v3.2.29 forwarding and filtered-port fixes
 
 - Fixes stale DNAT rules surviving a destination change. `setup_forward_ir` only

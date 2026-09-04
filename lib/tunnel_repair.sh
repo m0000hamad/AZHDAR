@@ -194,11 +194,11 @@ _tunnel_repair_apply_firewall(){
 }
 
 _tunnel_repair_restart_services(){
+  # restart_services_* already enables and starts the units, so the previous
+  # start_services_* call only doubled every service transition.
   if [[ "${WG_MODE:-classic}" != "account" ]] && _tunnel_repair_remote_available; then
-    start_services_remote || true
     restart_services_remote || true
   fi
-  start_services_local || true
   restart_services_local || true
 }
 

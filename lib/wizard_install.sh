@@ -716,12 +716,13 @@ fi
     return 1
   fi
 
-  # Start services
+  # Start services.
+  # restart_services_* enables the unit and starts it whether or not it was
+  # already running, so calling start_services_* first only cycled Mimic and
+  # WireGuard a second time on both servers for no effect.
   azhdar_ssh_guard_all || true
-  start_services_remote && ok "RESULT: OUT/remote services start requested." || warn "RESULT: OUT/remote services start NOT confirmed."
-  start_services_local && ok "RESULT: IR/local services start requested." || warn "RESULT: IR/local services start NOT confirmed."
-  restart_services_remote && ok "RESULT: OUT/remote services restart requested." || warn "RESULT: OUT/remote services restart NOT confirmed."
-  restart_services_local && ok "RESULT: IR/local services restart requested." || warn "RESULT: IR/local services restart NOT confirmed."
+  restart_services_remote && ok "RESULT: OUT/remote services started." || warn "RESULT: OUT/remote services start NOT confirmed."
+  restart_services_local && ok "RESULT: IR/local services started." || warn "RESULT: IR/local services start NOT confirmed."
   azhdar_ssh_guard_all || true
 
   # Optional forward rules
