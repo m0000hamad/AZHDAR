@@ -36,14 +36,16 @@ _update_fetch(){
   local url="$1"
   local out="$2"
 
+  azhdar_gh_hdr_args "$url" 2>/dev/null || AZ_GH_HDR=()
+
   if have_cmd curl; then
     # strict
-    if curl -fsSL --connect-timeout 10 --max-time 30 "$url" -o "$out"; then
+    if curl -fsSL --connect-timeout 10 --max-time 30 ${AZ_GH_HDR[@]+"${AZ_GH_HDR[@]}"} "$url" -o "$out"; then
       return 0
     fi
     # if https, retry insecure and http fallback
     if [[ "$url" == https://* ]]; then
-      if curl -kfsSL --connect-timeout 10 --max-time 30 "$url" -o "$out"; then
+      if curl -kfsSL --connect-timeout 10 --max-time 30 ${AZ_GH_HDR[@]+"${AZ_GH_HDR[@]}"} "$url" -o "$out"; then
         return 0
       fi
       local http_url="http://${url#https://}"
@@ -109,7 +111,7 @@ azhdar_update_check(){
   azhdar_normalize_update_base_url 2>/dev/null || true
   local base="${UPDATE_BASE_URL:-}"
   if [[ -z "$base" ]]; then
-    base="https://dl.digitsell.shop/share/gZ1XGygF"
+    base="https://github.com/m0000hamad/AZHDAR"
   fi
 
   local list_url download_base fb_root share_id
@@ -131,6 +133,15 @@ azhdar_update_check(){
     share_id="${BASH_REMATCH[2]}"
     list_url="${fb_root}/api/public/share/${share_id}"
     download_base="${fb_root}/api/public/dl/${share_id}"
+  elif [[ "${base%/}" =~ ^https?://github\.com/([^/]+)/([^/?#]+)$ ]]; then
+    local gh_owner gh_repo
+    gh_owner="${BASH_REMATCH[1]}"
+    gh_repo="${BASH_REMATCH[2]%.git}"
+    list_url="https://api.github.com/repos/${gh_owner}/${gh_repo}/contents/dist"
+    download_base="https://api.github.com/repos/${gh_owner}/${gh_repo}/contents/dist"
+  elif [[ "${base%/}" =~ ^https://api\.github\.com/repos/[^/]+/[^/]+/contents/.+$ ]]; then
+    list_url="${base%/}"
+    download_base="${base%/}"
   elif [[ "${base%/}" =~ ^(https?://[^/]+)/api/public/dl/([^/?#]+)$ ]]; then
     fb_root="${BASH_REMATCH[1]}"
     share_id="${BASH_REMATCH[2]}"
@@ -216,7 +227,7 @@ azhdar_update_menu(){
   banner
   echo -e "${BOLD}${WHT}AZHDAR Update${RST}"
   hr
-  echo -e "${DIM}Source:${RST} ${UPDATE_BASE_URL:-https://dl.digitsell.shop/share/gZ1XGygF}"
+  echo -e "${DIM}Source:${RST} ${UPDATE_BASE_URL:-https://github.com/m0000hamad/AZHDAR}"
   echo -e "${DIM}Current version:${RST} ${SCRIPT_VERSION}"
   hr
 

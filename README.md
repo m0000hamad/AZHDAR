@@ -47,7 +47,7 @@ systemctl restart azhdar.service
 
 ## In-menu update
 The startup screen includes `Update AZHDAR`.
-Updates are auto-discovered from a directory listing (`UPDATE_BASE_URL`, default: https://dl.digitsell.shop/share/gZ1XGygF) by scanning for `azhdar-X.Y.Z.zip` and picking the newest semver.
+Updates are auto-discovered from the repository's `dist/` listing (`UPDATE_BASE_URL`, default: https://github.com/m0000hamad/AZHDAR) by scanning for `azhdar-X.Y.Z.zip` and picking the newest semver.
 
 > The update package must include `scripts/install.sh` (like this ZIP).
 
@@ -62,7 +62,7 @@ This build adds a conservative tunnel repair path for operational servers:
 - Repair cleans stale local AZHDAR firewall/NAT/RST rules, rebuilds WG/Mimic configs from the saved profile, restarts services, and only touches the OUT server when SSH is actually reachable.
 
 
-Mimic fallback mirror name: m0000hamad (`https://dl.digitsell.shop/share/Wf-XKNL9`).
+Mimic fallback mirror name: m0000hamad (`https://api.github.com/repos/m0000hamad/AZHDAR/contents/assets`).
 
 ## AZHDAR v3.2.8 service detection fixes
 

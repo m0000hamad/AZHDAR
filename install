@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# AZHDAR bootstrap installer (GitHub source).
+#
+# Usage (private repo, needs a read-only token):
+#   export AZHDAR_GH_TOKEN=github_pat_xxx
+#   curl -fsSL -H "Authorization: Bearer $AZHDAR_GH_TOKEN" \
+#        -H "Accept: application/vnd.github.raw" \
+#        https://api.github.com/repos/m0000hamad/AZHDAR/contents/install | sudo -E bash
+#
+# Optional overrides:
+#   AZHDAR_GH_OWNER / AZHDAR_GH_REPO / AZHDAR_GH_API  - point at a fork or a proxy
+#   AZHDAR_DIST_MIRROR - plain directory URL that serves azhdar-X.Y.Z.zip files,
+#                        used when api.github.com is unreachable (filtering).
+set -euo pipefail
+
+GH_OWNER="${AZHDAR_GH_OWNER:-m0000hamad}"
+GH_REPO="${AZHDAR_GH_REPO:-AZHDAR}"
+GH_API="${AZHDAR_GH_API:-https://api.github.com}"
+DIST_MIRROR="${AZHDAR_DIST_MIRROR:-}"
+TOKEN_FILE="/etc/azhdar/gh.token"
+
+TOKEN="${AZHDAR_GH_TOKEN:-}"
+if [ -z "$TOKEN" ] && [ -r "$TOKEN_FILE" ]; then
+  TOKEN="$(tr -d ' \t\r\n' < "$TOKEN_FILE" 2>/dev/null || true)"
+fi
+
+DIST="${GH_API%/}/repos/${GH_OWNER}/${GH_REPO}/contents/dist"
+
+gh_hdr=(-H "Accept: application/vnd.github.raw")
+if [ -n "$TOKEN" ]; then
+  gh_hdr+=(-H "Authorization: Bearer ${TOKEN}")
+fi
+
+fetch_gh(){ # url out
+  curl -fsSL --connect-timeout 10 --max-time 180 "${gh_hdr[@]}" "$1" -o "$2"
+}
+fetch_plain(){ # url out
+  curl -fsSL --connect-timeout 10 --max-time 180 "$1" -o "$2"
+}
+
+apt-get update -y
+apt-get install -y curl unzip ca-certificates
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+SOURCE=""
+if fetch_gh "$DIST" "$T/listing"; then
+  SOURCE="gh"
+elif [ -n "$DIST_MIRROR" ] && fetch_plain "${DIST_MIRROR%/}/" "$T/listing"; then
+  SOURCE="mirror"
+else
+  echo "ERROR: cannot reach ${DIST}." >&2
+  echo "       If the repository is private, export AZHDAR_GH_TOKEN and use sudo -E." >&2
+  echo "       If GitHub is filtered, set AZHDAR_DIST_MIRROR to a reachable mirror." >&2
+  exit 1
+fi
+
+Z="$(grep -oE 'azhdar-[0-9]+\.[0-9]+\.[0-9]+\.zip' "$T/listing" | sort -u -V | tail -n1 || true)"
+[ -n "$Z" ] || { echo "ERROR: no azhdar-x.y.z.zip found in listing." >&2; exit 1; }
+
+echo "Installing latest version: $Z (source: $SOURCE)"
+cd "$T"
+if [ "$SOURCE" = "gh" ]; then
+  fetch_gh "${DIST}/${Z}" "$Z" || { echo "ERROR: download failed." >&2; exit 1; }
+else
+  fetch_plain "${DIST_MIRROR%/}/${Z}" "$Z" || { echo "ERROR: download failed." >&2; exit 1; }
+fi
+
+unzip -oq "$Z"
+D="$(find . -maxdepth 1 -type d -name 'azhdar-*' | head -n1)"
+[ -n "$D" ] || { echo "ERROR: no azhdar-* directory found after unzip." >&2; ls -la; exit 1; }
+
+# Persist the token so the in-app updater can reach the private repo later.
+if [ -n "$TOKEN" ]; then
+  mkdir -p /etc/azhdar
+  umask 077
+  printf '%s\n' "$TOKEN" > "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
+fi
+
+cd "$D"
+bash scripts/install.sh
+
+echo
+echo "Azhdar installed successfully."
+echo "Run it with: azhdar"

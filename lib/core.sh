@@ -22,7 +22,7 @@ GLOBAL_STATE="${BASE_DIR}/global.env"
 LOG_FILE="${BASE_DIR}/manager.log"
 
 # Self-update (auto-discover latest zip from directory listing).
-UPDATE_BASE_URL_DEFAULT="https://dl.digitsell.shop/share/gZ1XGygF"
+UPDATE_BASE_URL_DEFAULT="https://github.com/m0000hamad/AZHDAR"
 UPDATE_BASE_URL="${UPDATE_BASE_URL:-$UPDATE_BASE_URL_DEFAULT}"
 
 azhdar_normalize_update_base_url(){
@@ -32,14 +32,8 @@ azhdar_normalize_update_base_url(){
   local u="${UPDATE_BASE_URL:-}"
   u="${u%/}"
   case "$u" in
-    ""|*Wf-XKNL9*|*62.60.184.163*|*37.32.26.129*)
+    ""|*digitsell.shop*|*Wf-XKNL9*|*62.60.184.163*|*37.32.26.129*)
       UPDATE_BASE_URL="$UPDATE_BASE_URL_DEFAULT"
-      ;;
-    */api/public/dl/gZ1XGygF)
-      UPDATE_BASE_URL="https://dl.digitsell.shop/share/gZ1XGygF"
-      ;;
-    */api/public/share/gZ1XGygF)
-      UPDATE_BASE_URL="https://dl.digitsell.shop/share/gZ1XGygF"
       ;;
   esac
 }
@@ -49,7 +43,7 @@ azhdar_normalize_update_base_url
 # Public name shown in messages: m0000hamad
 ASSET_MIRROR_NAME_DEFAULT="m0000hamad"
 ASSET_MIRROR_NAME="${ASSET_MIRROR_NAME:-$ASSET_MIRROR_NAME_DEFAULT}"
-ASSET_MIRROR_BASE_DEFAULT="https://dl.digitsell.shop/api/public/dl/Wf-XKNL9"
+ASSET_MIRROR_BASE_DEFAULT="https://api.github.com/repos/m0000hamad/AZHDAR/contents/assets"
 ASSET_MIRROR_BASE="${ASSET_MIRROR_BASE:-$ASSET_MIRROR_BASE_DEFAULT}"
 
 azhdar_normalize_asset_mirror_base(){
@@ -59,7 +53,7 @@ azhdar_normalize_asset_mirror_base(){
   local u="${ASSET_MIRROR_BASE:-}"
   u="${u%/}"
   case "$u" in
-    ""|*atil.ir*|*62.60.184.163*)
+    ""|*digitsell.shop*|*atil.ir*|*62.60.184.163*)
       ASSET_MIRROR_BASE="$ASSET_MIRROR_BASE_DEFAULT"
       ;;
     *)
@@ -84,6 +78,29 @@ azhdar_normalize_asset_mirror_base(){
   unset _az_mirror_tmp _az_mirror_share _az_mirror_root 2>/dev/null || true
 }
 azhdar_normalize_asset_mirror_base
+
+# -------------------- GitHub source auth --------------------
+# The AZHDAR repository is private, so update/asset downloads need a read-only
+# token. Order: environment, then the file dropped by the bootstrap installer.
+AZHDAR_GH_TOKEN_FILE="${AZHDAR_GH_TOKEN_FILE:-/etc/azhdar/gh.token}"
+if [[ -z "${AZHDAR_GH_TOKEN:-}" && -r "$AZHDAR_GH_TOKEN_FILE" ]]; then
+  AZHDAR_GH_TOKEN="$(tr -d ' \t\r\n' < "$AZHDAR_GH_TOKEN_FILE" 2>/dev/null || true)"
+fi
+AZHDAR_GH_TOKEN="${AZHDAR_GH_TOKEN:-}"
+
+AZ_GH_HDR=()
+azhdar_gh_hdr_args(){
+  # usage: azhdar_gh_hdr_args <url>   -> fills AZ_GH_HDR with curl header flags
+  AZ_GH_HDR=()
+  case "${1:-}" in
+    https://api.github.com/*|https://raw.githubusercontent.com/*)
+      AZ_GH_HDR+=( -H "Accept: application/vnd.github.raw" )
+      if [[ -n "${AZHDAR_GH_TOKEN:-}" ]]; then
+        AZ_GH_HDR+=( -H "Authorization: Bearer ${AZHDAR_GH_TOKEN}" )
+      fi
+      ;;
+  esac
+}
 
 # Default candidates (ports that typically blend in)
 WG_PORT_CANDIDATES=(443 8443 2053 2083 2087 2096 8080 80 4443 9443)

@@ -46,11 +46,13 @@ mimic_static_mirror_asset_url(){
 curl_fetch_fast(){
   # usage: curl_fetch_fast <url> <out>
   local url="$1" out="$2"
+  azhdar_gh_hdr_args "$url" 2>/dev/null || AZ_GH_HDR=()
   curl -fL \
     --connect-timeout 4 \
     --max-time 25 \
     --retry 1 --retry-delay 1 --retry-max-time 10 \
     --speed-time 8 --speed-limit 25000 \
+    ${AZ_GH_HDR[@]+"${AZ_GH_HDR[@]}"} \
     "$url" -o "$out" >/dev/null 2>&1
 }
 
@@ -59,10 +61,12 @@ curl_fetch_relaxed(){
   # speed limits or short max-time. Use this second pass before blaming the
   # mirror/GitHub URL.
   local url="$1" out="$2"
+  azhdar_gh_hdr_args "$url" 2>/dev/null || AZ_GH_HDR=()
   curl -fL \
     --connect-timeout 10 \
     --max-time 180 \
     --retry 2 --retry-delay 2 --retry-max-time 80 \
+    ${AZ_GH_HDR[@]+"${AZ_GH_HDR[@]}"} \
     "$url" -o "$out" >/dev/null 2>&1
 }
 
@@ -95,6 +99,22 @@ asset_mirror_share_api_url(){
   #   https://host/api/public/dl/HASH
   local base="${ASSET_MIRROR_BASE%/}" root share
   case "$base" in
+    https://api.github.com/repos/*/contents/*)
+      # Directory listings already come back as JSON with "name" fields.
+      printf '%s\n' "$base"
+      return 0
+      ;;
+    https://raw.githubusercontent.com/*)
+      # raw.githubusercontent.com/<owner>/<repo>/<ref>/<path...>
+      local _rest _o _r _ref _path
+      _rest="${base#https://raw.githubusercontent.com/}"
+      _o="${_rest%%/*}"; _rest="${_rest#*/}"
+      _r="${_rest%%/*}"; _rest="${_rest#*/}"
+      _ref="${_rest%%/*}"; _path="${_rest#*/}"
+      [[ -n "$_o" && -n "$_r" && -n "$_ref" ]] || return 1
+      printf '%s\n' "https://api.github.com/repos/${_o}/${_r}/contents/${_path}?ref=${_ref}"
+      return 0
+      ;;
     */api/public/dl/*)
       share="${base##*/api/public/dl/}"
       root="${base%%/api/public/dl/*}"
@@ -118,13 +138,21 @@ asset_mirror_names(){
   local api json
   api="$(asset_mirror_share_api_url 2>/dev/null || true)"
   [[ -n "$api" ]] || return 1
-  json="$(curl -fsSL --max-time 8 "$api" 2>/dev/null || true)"
+  azhdar_gh_hdr_args "$api" 2>/dev/null || AZ_GH_HDR=()
+  json="$(curl -fsSL --max-time 8 ${AZ_GH_HDR[@]+"${AZ_GH_HDR[@]}"} "$api" 2>/dev/null || true)"
   [[ -n "$json" ]] || return 1
   # Do not require jq here; installer must work on minimal systems.
   printf '%s' "$json" | grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
 }
 
 azhdar_url_path_escape_name(){
+  # GitHub contents paths are matched literally; do not percent-escape them.
+  case "${ASSET_MIRROR_BASE:-}" in
+    https://api.github.com/*|https://raw.githubusercontent.com/*)
+      printf '%s' "${1:-}"
+      return 0
+      ;;
+  esac
   # File Browser public-download paths need literal filename components. Encode
   # characters such as + from Debian versions (0.7.0+ds-2), otherwise some
   # proxies/servers may resolve the path incorrectly.
@@ -638,7 +666,7 @@ install_mimic_remote(){
 
   local remote_out="" remote_rc=0 _azhdar_had_errexit=0
   [[ $- == *e* ]] && _azhdar_had_errexit=1 && set +e
-  remote_out="$(ssh_run_stdin_env_root_best_effort "CODENAME=${codename}" "MIMIC_FB_DEB=${fb1}" "MIMIC_FB_DKMS=${fb2}" "ASSET_MIRROR_NAME=${ASSET_MIRROR_NAME:-m0000hamad}" <<'REMOTE'
+  remote_out="$(ssh_run_stdin_env_root_best_effort "CODENAME=${codename}" "MIMIC_FB_DEB=${fb1}" "MIMIC_FB_DKMS=${fb2}" "ASSET_MIRROR_NAME=${ASSET_MIRROR_NAME:-m0000hamad}" "AZHDAR_GH_TOKEN=${AZHDAR_GH_TOKEN:-}" <<'REMOTE'
 set -uo pipefail
 
 if ! command -v apt-get >/dev/null 2>&1; then
@@ -700,12 +728,27 @@ elif [ -z "$primary1" ] || [ -z "$primary2" ]; then
   exit 6
 fi
 
+gh_curl(){
+  # usage: gh_curl <url> [curl args...] ; adds auth headers for GitHub URLs.
+  u="$1"; shift
+  case "$u" in
+    https://api.github.com/*|https://raw.githubusercontent.com/*)
+      if [ -n "${AZHDAR_GH_TOKEN:-}" ]; then
+        curl -H "Accept: application/vnd.github.raw" -H "Authorization: Bearer ${AZHDAR_GH_TOKEN}" "$@" "$u"
+      else
+        curl -H "Accept: application/vnd.github.raw" "$@" "$u"
+      fi
+      ;;
+    *) curl "$@" "$u" ;;
+  esac
+}
+
 fetch_remote_with_fallback(){
   primary="$1"; fallback="$2"; out="$3"
-  if [ -n "$primary" ] && curl -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 "$primary" -o "$out" >/dev/null 2>&1; then return 0; fi
-  if [ -n "$fallback" ] && curl -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 "$fallback" -o "$out" >/dev/null 2>&1; then return 0; fi
-  if [ -n "$primary" ] && curl -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 "$primary" -o "$out" >/dev/null 2>&1; then return 0; fi
-  if [ -n "$fallback" ] && curl -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 "$fallback" -o "$out" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$primary" ] && gh_curl "$primary" -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 -o "$out" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$fallback" ] && gh_curl "$fallback" -fL --connect-timeout 4 --max-time 25 --retry 1 --retry-delay 1 --retry-max-time 10 --speed-time 8 --speed-limit 25000 -o "$out" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$primary" ] && gh_curl "$primary" -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 -o "$out" >/dev/null 2>&1; then return 0; fi
+  if [ -n "$fallback" ] && gh_curl "$fallback" -fL --connect-timeout 10 --max-time 180 --retry 2 --retry-delay 2 --retry-max-time 80 -o "$out" >/dev/null 2>&1; then return 0; fi
   return 1
 }
 

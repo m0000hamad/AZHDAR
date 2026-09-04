@@ -1,0 +1,65 @@
+# Hosting and migration notes
+
+AZHDAR used to be served from a File Browser instance at `dl.digitsell.shop`
+(share `gZ1XGygF` for releases, share `Wf-XKNL9` for the Mimic `.deb` mirror).
+That host is no longer required: everything now lives in this repository.
+
+## What moved here
+
+| Old location | New location |
+| --- | --- |
+| `dl.digitsell.shop/api/public/dl/gZ1XGygF/install` | `install` (repository root) |
+| `dl.digitsell.shop/.../gZ1XGygF/azhdar-X.Y.Z.zip` | `dist/azhdar-X.Y.Z.zip` (all 30 releases, 3.1.15 – 3.2.28) |
+| `dl.digitsell.shop/.../Wf-XKNL9/*.deb` | `assets/*.deb` |
+
+Each release is also a commit tagged `vX.Y.Z`, so `git show v3.2.14` gives the
+exact source of that build.
+
+## The repository is private
+
+Anonymous `curl | bash` no longer works. Every download path (installer,
+self-updater, Mimic asset mirror) authenticates with a read-only GitHub token.
+
+Create a **fine-grained personal access token** scoped to this repository only,
+with `Contents: Read-only`, then:
+
+```bash
+export AZHDAR_GH_TOKEN=github_pat_xxxxxxxx
+curl -fsSL \
+  -H "Authorization: Bearer $AZHDAR_GH_TOKEN" \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/m0000hamad/AZHDAR/contents/install" | sudo -E bash
+```
+
+The installer writes the token to `/etc/azhdar/gh.token` (mode 600) so the
+in-app updater and the Mimic mirror can reach the repository later without the
+environment variable. Delete that file to revoke access on a given server.
+
+## Configuration
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AZHDAR_GH_TOKEN` | – | Read-only token; falls back to `/etc/azhdar/gh.token` |
+| `AZHDAR_GH_TOKEN_FILE` | `/etc/azhdar/gh.token` | Alternate token path |
+| `UPDATE_BASE_URL` | `https://github.com/m0000hamad/AZHDAR` | Self-update source; also accepts an `api.github.com/.../contents/<dir>` URL or any plain directory listing that serves `azhdar-X.Y.Z.zip` |
+| `ASSET_MIRROR_BASE` | `https://api.github.com/repos/m0000hamad/AZHDAR/contents/assets` | Mimic `.deb` mirror |
+| `AZHDAR_DIST_MIRROR` | – | Installer-only fallback: a plain directory URL serving the release zips |
+
+Existing installs that still carry a `dl.digitsell.shop` value in
+`/etc/azhdar/global.env` are reset to the GitHub defaults automatically on the
+next run.
+
+## If GitHub is filtered on the servers
+
+`api.github.com` is the only GitHub host the code talks to. When it is
+unreachable, point the two variables above at any reachable proxy or mirror —
+they accept plain directory URLs, so a simple static file server holding
+`dist/` and `assets/` is enough:
+
+```bash
+export AZHDAR_DIST_MIRROR="https://mirror.example.com/azhdar/dist"
+export UPDATE_BASE_URL="https://mirror.example.com/azhdar/dist"
+export ASSET_MIRROR_BASE="https://mirror.example.com/azhdar/assets"
+```
+
+Those can also be written into `/etc/azhdar/global.env` so they survive updates.

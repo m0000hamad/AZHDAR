@@ -189,15 +189,17 @@ install_mimic_apt_only(){
 " "$urls" | grep -E "/${codename}_mimic-dkms_[^/]*_amd64\.deb$" | head -n1 || true)"
 
   # Mirror fallback (useful when GitHub is blocked). You can override:
-  #   export AZHDAR_MIRROR_BASE="https://dl.digitsell.shop/api/public/dl/Wf-XKNL9"
-  local MIRROR_BASE="${AZHDAR_MIRROR_BASE:-https://dl.digitsell.shop/api/public/dl/Wf-XKNL9}"
+  #   export AZHDAR_MIRROR_BASE="https://api.github.com/repos/m0000hamad/AZHDAR/contents/assets"
+  local MIRROR_BASE="${AZHDAR_MIRROR_BASE:-${ASSET_MIRROR_BASE:-https://api.github.com/repos/m0000hamad/AZHDAR/contents/assets}}"
   if [[ -z "$deb1" || -z "$deb2" ]]; then
     deb1="${MIRROR_BASE}/${codename}_mimic_0.7.0-1_amd64.deb"
     deb2="${MIRROR_BASE}/${codename}_mimic-dkms_0.7.0-1_amd64.deb"
   fi
 
-  curl -fL --connect-timeout 6 --max-time 120 "$deb1" -o "$tmp/mimic.deb" >/dev/null 2>&1 || true
-  curl -fL --connect-timeout 6 --max-time 120 "$deb2" -o "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || true
+  azhdar_gh_hdr_args "$deb1" 2>/dev/null || AZ_GH_HDR=()
+  curl -fL --connect-timeout 6 --max-time 120 ${AZ_GH_HDR[@]+"${AZ_GH_HDR[@]}"} "$deb1" -o "$tmp/mimic.deb" >/dev/null 2>&1 || true
+  azhdar_gh_hdr_args "$deb2" 2>/dev/null || AZ_GH_HDR=()
+  curl -fL --connect-timeout 6 --max-time 120 ${AZ_GH_HDR[@]+"${AZ_GH_HDR[@]}"} "$deb2" -o "$tmp/mimic-dkms.deb" >/dev/null 2>&1 || true
 
   if [[ -s "$tmp/mimic.deb" && -s "$tmp/mimic-dkms.deb" ]]; then
     dpkg-deb -I "$tmp/mimic.deb" >/dev/null 2>&1 || return 0
