@@ -139,6 +139,7 @@ main_menu(){
     echo "13) Update AZHDAR"
     echo "14) Repair tunnel / auto watchdog"
     echo "15) Emergency IR recovery (no rebuild)"
+    echo "16) Live monitor (clients / uptime / traffic)"
     echo " 0) Exit"
     hr
 
@@ -203,6 +204,10 @@ main_menu(){
       15)
         azhdar_recover_ir_runtime || true
         pause
+        ;;
+      16)
+        ensure_profile_selected || { pause; continue; }
+        menu_monitor || true
         ;;
       0)
         exit 0

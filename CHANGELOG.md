@@ -3,6 +3,36 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.31 live monitor
+
+Adds `16) Live monitor` to the main menu and `azhdar --monitor` on the command
+line: a refreshing terminal dashboard for the active profile. It only reads
+state, and never writes configuration or firewall rules.
+
+- Clients: established connections on the forwarding ports and how many distinct
+  client addresses they come from, read from conntrack, with a sparkline of the
+  recent trend. Distinct addresses is the honest proxy for "people online"; one
+  client usually holds several connections.
+- Uptime: system, WireGuard and Mimic, each with its restart count, so a service
+  that has been bouncing is visible.
+- Traffic: in, out, per-second rates with sparklines, the session total, and a
+  lifetime total. WireGuard's counters reset whenever the interface is
+  recreated, so the lifetime figure is carried forward in a small state file per
+  profile.
+- Framing: payload bytes, packet count, and an estimate of what Mimic's framing
+  adds.
+
+The framing figure is an estimate on purpose. Mimic rewrites packets in XDP,
+which runs before netfilter and before any capture hook, so on this host the
+traffic only ever appears in its UDP form: iptables counters and tcpdump both
+miss the TCP frames entirely. Wire bytes cannot be measured locally, so the
+panel multiplies the packet count by the 12 bytes a 20-byte TCP header adds over
+an 8-byte UDP header, and says that it is an estimate.
+
+Nothing in this stack compresses. WireGuard does not, and Mimic wraps UDP in TCP
+framing, which adds bytes rather than removing them, so the monitor reports
+added overhead and never claims a compression ratio.
+
 ## AZHDAR v3.2.30 fewer service restarts
 
 Install and repair restarted WireGuard and Mimic twice on both servers.

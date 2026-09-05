@@ -6,7 +6,7 @@
 
 **تانل وایرگاردی که به‌شکل TCP سفر می‌کند**
 
-![version](https://img.shields.io/badge/version-3.2.30-0E7A88)
+![version](https://img.shields.io/badge/version-3.2.31-0E7A88)
 ![platform](https://img.shields.io/badge/Ubuntu%2024.04%20%7C%20Debian%2012-informational)
 ![license](https://img.shields.io/badge/license-proprietary-9E5C0C)
 
@@ -143,6 +143,7 @@ Labels are shown exactly as they appear in the terminal.
 | **13** | `Update AZHDAR` | Shows the current and newest version, and installs it. | نسخه فعلی و جدیدترین نسخه را نشان می‌دهد و نصب می‌کند. |
 | **14** | `Repair tunnel / auto watchdog` | Manual repair, deep repair with tunnel-IP auto-heal, and the watchdog controls. | تعمیر دستی، تعمیر عمیق با خوددرمانی آدرس تانل، و کنترل‌های دیده‌بان. |
 | **15** | `Emergency IR recovery` | Clears the relay's runtime state without rebuilding the profile and without touching sshd. | وضعیت زمان اجرای رله را بدون بازسازی پروفایل و بدون دست‌زدن به sshd پاک می‌کند. |
+| **16** | `Live monitor (clients / uptime / traffic)` | Refreshing dashboard: connections and distinct client IPs, uptime and restart counts, traffic rates and totals. Read-only. | داشبورد زنده: اتصال‌ها و IPهای یکتای کلاینت، آپتایم و تعداد ری‌استارت، نرخ و مجموع ترافیک. فقط خواندنی. |
 | **0** | `Exit` | Leaves the menu. Services keep running. | از منو خارج می‌شود. سرویس‌ها به کارشان ادامه می‌دهند. |
 
 <details>
@@ -231,6 +232,7 @@ azhdar --smart-wizard   # one-step install, asks only ports
 azhdar --repair-tunnel  # manual repair for the active profile
 azhdar --watchdog       # check and repair if enabled (used by the timer)
 azhdar --boot           # safe apply at boot (used by the systemd unit)
+azhdar --monitor        # live dashboard for the active profile
 azhdar --recover-ir     # emergency relay cleanup, leaves sshd alone
 azhdar --update         # open the update menu
 azhdar --version

@@ -38,6 +38,8 @@ source "${LIB_DIR}/services.sh"
 # shellcheck source=/dev/null
 source "${LIB_DIR}/diagnostics.sh"
 # shellcheck source=/dev/null
+source "${LIB_DIR}/monitor.sh"
+# shellcheck source=/dev/null
 source "${LIB_DIR}/preflight.sh"
 # shellcheck source=/dev/null
 source "${LIB_DIR}/wizard_install.sh"
@@ -78,6 +80,7 @@ Usage:
   azhdar --repair-tunnel Manual tunnel repair for active profile
   azhdar --smart-wizard  Run Smart Wizard / one-step install
   azhdar --watchdog      Auto-check tunnel and repair if enabled
+  azhdar --monitor       Live monitor (clients, uptime, traffic)
   azhdar --recover-ir    Emergency IR runtime cleanup (no SSHD changes)
   azhdar --update        Open update menu
   azhdar --version       Print version
@@ -104,6 +107,17 @@ case "${1:-}" in
   --watchdog|--auto-repair-watchdog)
     shift
     azhdar_tunnel_watchdog "$@"
+    ;;
+  --monitor|--mon)
+    shift
+    need_root
+    ensure_dirs
+    azhdar_interactive_mode
+    migrate_legacy
+    load_global
+    ensure_profile_selected || exit 1
+    azhdar_monitor_live || true
+    exit 0
     ;;
   --recover-ir|--recovery-ir)
     shift
