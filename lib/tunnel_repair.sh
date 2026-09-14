@@ -104,7 +104,12 @@ _tunnel_repair_health_quiet(){
 _tunnel_repair_snapshot(){
   local dir="${BASE_DIR}/snapshots/tunnel-repair-$(_tunnel_repair_ts)"
   mkdir -p "$dir" >/dev/null 2>&1 || true
-  cp -a "${BASE_DIR}" "$dir/etc-azhdar" 2>/dev/null || true
+  if have_cmd rsync; then
+    rsync -a --exclude=snapshots "${BASE_DIR}/" "$dir/etc-azhdar/" 2>/dev/null || true
+  else
+    mkdir -p "$dir/etc-azhdar" 2>/dev/null || true
+    find "${BASE_DIR}" -mindepth 1 -maxdepth 1 -not -name snapshots -exec cp -a {} "$dir/etc-azhdar/" \; 2>/dev/null || true
+  fi
   cp -a /etc/wireguard "$dir/etc-wireguard" 2>/dev/null || true
   cp -a /etc/mimic "$dir/etc-mimic" 2>/dev/null || true
   if have_cmd iptables-save; then iptables-save >"$dir/iptables-save.v4" 2>/dev/null || true; fi
