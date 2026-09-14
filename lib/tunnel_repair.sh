@@ -119,14 +119,17 @@ _tunnel_repair_snapshot(){
 }
 
 _tunnel_repair_stop_local_runtime(){
+  # Mimic runs ONE shared systemd instance per WAN interface (mimic@<wan>),
+  # not per-profile. Every other AZHDAR profile on this same WAN multiplexes
+  # through that same instance. Only stop the instance for THIS profile's own
+  # WAN so repairing one profile does not bounce every sibling profile that
+  # happens to share a different WAN (multi-NIC boxes). On a single-NIC box
+  # siblings on the same WAN still see a brief reconnect blip here; that is
+  # unavoidable given Mimic's shared-per-WAN design, not fixable per-profile.
   local wan wgsvc
   wan="$(mimic_detect_local_if 2>/dev/null || detect_wan_if 2>/dev/null || true)"
   wgsvc="$(svc_wg)"
   if command -v systemctl >/dev/null 2>&1; then
-    local svc
-    while read -r svc; do
-      [[ -n "$svc" ]] && systemctl stop "$svc" >/dev/null 2>&1 || true
-    done < <(systemctl list-units --all 'mimic@*.service' --no-legend --plain 2>/dev/null | awk '{print $1}')
     [[ -n "$wan" ]] && systemctl stop "mimic@${wan}" >/dev/null 2>&1 || true
     systemctl stop "$wgsvc" >/dev/null 2>&1 || true
     systemctl reset-failed "$wgsvc" "mimic@${wan}" >/dev/null 2>&1 || true

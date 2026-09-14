@@ -189,13 +189,12 @@ stop_services_local(){
     return 0
   fi
   step "Stop services (local)"
-  local wan svc
+  # Mimic is one shared systemd instance per WAN interface (mimic@<wan>), used
+  # by every profile on that WAN. Only stop THIS profile's own WAN instance —
+  # stopping all mimic@* units also kills sibling profiles on other WANs
+  # (multi-NIC boxes) for no reason.
+  local wan
   wan="$(mimic_detect_local_if 2>/dev/null || true)"
-  if command -v systemctl >/dev/null 2>&1; then
-    while read -r svc; do
-      [[ -n "$svc" ]] && systemctl stop "$svc" >/dev/null 2>&1 || true
-    done < <(systemctl list-units --all 'mimic@*.service' --no-legend --plain 2>/dev/null | awk '{print $1}')
-  fi
   [[ -n "$wan" ]] && systemctl stop "mimic@${wan}" >/dev/null 2>&1 || true
   systemctl stop "$(svc_wg)" >/dev/null 2>&1 || true
   ok "Local services stopped."

@@ -100,6 +100,24 @@ azhdar_firewall_safety_local(){
   allow_ir_ssh_port_local || true
   remove_dnat_for_port_local "${IR_SSH_PORT}" || true
   remove_rst_drop_for_port_local "${IR_SSH_PORT}" || true
+  dedup_forward_dnat_local || true
+}
+
+dedup_forward_dnat_local(){
+  # Self-heal: PREROUTING is first-match-wins. A stale DNAT rule for one of
+  # our own forward ports (old FORWARD_DST_IP/VLESS_DST_PORT left over from a
+  # crashed apply, an IP/port change, or an old bug) sitting ahead of the
+  # current correct rule silently sends client traffic to the wrong/dead
+  # target while the profile still reports the right destination. Runs on
+  # every safety pass so duplicates never survive without a manual repair.
+  local _dst_ip="${FORWARD_DST_IP:-${OUT_WG_IP:-}}"
+  [[ -n "${_dst_ip}" && -n "${VLESS_DST_PORT:-}" ]] || return 0
+  local want=" -j DNAT --to-destination ${_dst_ip}:${VLESS_DST_PORT}"
+  local p
+  for p in ${FORWARD_TCP_PORTS//,/ } ${FORWARD_UDP_PORTS//,/ }; do
+    [[ -z "$p" ]] && continue
+    iptables -t nat -S PREROUTING 2>/dev/null | grep -F -- "--dport ${p}" | grep -E -- ' -j (DNAT|REDIRECT)( |$)' | grep -vF -- "${want}" | _iptables_delete_lines nat || true
+  done
 }
 
 

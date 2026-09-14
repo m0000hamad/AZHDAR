@@ -3,6 +3,27 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.32: scope repair to one profile's WAN, self-heal duplicate DNAT
+
+Two live incidents from repairing one profile bouncing/breaking another
+profile, and a forwarded client port silently routing to a stale destination.
+
+- `_tunnel_repair_stop_local_runtime()` and `stop_services_local()` used to
+  stop every `mimic@*` systemd instance on the box. Mimic is one shared
+  instance per WAN interface (`mimic@<wan>`), so repairing/stopping one
+  profile bounced every sibling profile on a different WAN too (multi-NIC
+  boxes). Both now stop only the WAN instance the active profile actually
+  uses.
+- PREROUTING is first-match-wins. A stale DNAT rule for a forward port (left
+  over from a crashed apply, a destination-IP/port change, or historical
+  state) sitting ahead of the current correct rule silently sent client
+  traffic to the wrong/dead destination while the profile still reported the
+  right one. `azhdar_firewall_safety_local()` — already run before every
+  apply/repair/boot — now also calls `dedup_forward_dnat_local()`, which
+  removes any DNAT rule for a forward port that doesn't match the profile's
+  current destination, so duplicates can no longer accumulate or survive a
+  crashed run.
+
 ## AZHDAR v3.2.31 live monitor
 
 Adds `16) Live monitor` to the main menu and `azhdar --monitor` on the command
