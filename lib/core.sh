@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.2.32"
+SCRIPT_VERSION="3.2.33"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -192,6 +192,18 @@ need_root(){
 }
 
 have_cmd(){ command -v "$1" >/dev/null 2>&1; }
+
+prune_backups(){
+  # usage: prune_backups <path-prefix> [keep]
+  # Keeps the newest <keep> files named <path-prefix>*. Every apply/repair
+  # writes a timestamped backup, and a watchdog looping on a dead tunnel left
+  # hundreds of them in /etc/wireguard and /etc/iptables.
+  local prefix="$1" keep="${2:-10}"
+  [[ -n "$prefix" ]] || return 0
+  ls -1t -- "${prefix}"* 2>/dev/null | tail -n +"$((keep + 1))" | while IFS= read -r f; do
+    rm -f -- "$f" 2>/dev/null || true
+  done
+}
 
 # Quote a value so it can be safely re-loaded by bash without expansion/injection.
 # Uses bash's %q formatter (produces shell-escaped output).

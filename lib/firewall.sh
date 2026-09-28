@@ -34,15 +34,20 @@ allow_ir_ssh_port_local(){
 _iptables_delete_lines(){
   # usage: _iptables_delete_lines <table> <chain> <filter-command...>
   # Reads iptables-save style lines from stdin and deletes matching rules.
+  # `iptables -S` prints values with special characters quoted, e.g.
+  # --comment "AZHDAR:s6". Plain word splitting ($cmd) kept those quotes as
+  # part of the argument, so -D never matched a profile-tagged rule. xargs
+  # strips the quoting without any shell expansion. Every "-A/-D" site in
+  # lib/ (including the remote heredocs) uses the same pattern.
   local table="$1"; shift
   local line cmd
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     cmd="${line/-A /-D }"
     if [[ "$table" == "filter" ]]; then
-      iptables $cmd 2>/dev/null || true
+      printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
     else
-      iptables -t "$table" $cmd 2>/dev/null || true
+      printf '%s' "$cmd" | xargs iptables -t "$table" 2>/dev/null || true
     fi
   done
 }
@@ -177,10 +182,10 @@ iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT 2>/dev/null || true
 
 # Remove rules that would steal SSH before sshd sees it or drop SSH RST replies.
 iptables -t nat -S PREROUTING 2>/dev/null | grep -F -- "--dport ${p}" | grep -E -- ' -p tcp |^-A [^ ]+ -p tcp ' | grep -E -- ' -j (DNAT|REDIRECT)( |$)' | while read -r line; do
-  cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
 done
 iptables -t raw -S OUTPUT 2>/dev/null | grep -F -- "--sport ${p}" | grep -F -- "--tcp-flags RST RST" | grep -F -- "-j DROP" | while read -r line; do
-  cmd="${line/-A /-D }"; iptables -t raw $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t raw 2>/dev/null || true
 done
 
 if command -v ufw >/dev/null 2>&1; then ufw allow "${p}/tcp" >/dev/null 2>&1 || true; fi
@@ -300,7 +305,7 @@ remove_allow_rules_local(){
   local line cmd
   while read -r line; do
     cmd="${line/-A /-D }"
-    iptables $cmd 2>/dev/null || true
+    printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
   done < <(iptables -S INPUT 2>/dev/null | grep -F "${RULE_TAG:-$TAG}" || true)
 
   # Legacy cleanup (v2.0.0): rules were tagged with AZHDAR (global). Remove only ports from this profile.
@@ -313,19 +318,19 @@ remove_allow_rules_remote(){
   ssh_run_stdin_env_root_best_effort "TAG_MARK=${RULE_TAG:-$TAG}" "TAG_LEGACY=${TAG}" "WG_PORT=${WG_PORT}" "VLESS_DST_PORT=${VLESS_DST_PORT:-}" "WG_IF=${WG_IF}" <<'REMOTE' >/dev/null 2>&1 || true
 set -euo pipefail
 iptables -S INPUT 2>/dev/null | grep -F "${TAG_MARK}" | while read -r line; do
-  cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
 done
 
 # Legacy cleanup (v2.0.0): rules were tagged with AZHDAR (global).
 iptables -S INPUT 2>/dev/null | grep -F "${TAG_LEGACY}" | while read -r line; do
   # mimic allow
   if echo "$line" | grep -Fq -- "--dport ${WG_PORT}"; then
-    cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
     continue
   fi
   # vless allow on WG iface
   if [[ -n "${VLESS_DST_PORT}" ]] && echo "$line" | grep -Fq -- "-i ${WG_IF}" && echo "$line" | grep -Fq -- "--dport ${VLESS_DST_PORT}"; then
-    cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
     continue
   fi
 done
@@ -434,17 +439,17 @@ remove_forward_rules_local(){
   local line cmd
   while read -r line; do
     cmd="${line/-A /-D }"
-    iptables -t nat $cmd 2>/dev/null || true
+    printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
   done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -F "${RULE_TAG:-$TAG}" || true)
 
   while read -r line; do
     cmd="${line/-A /-D }"
-    iptables -t nat $cmd 2>/dev/null || true
+    printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
   done < <(iptables -t nat -S POSTROUTING 2>/dev/null | grep -F "${RULE_TAG:-$TAG}" || true)
 
   while read -r line; do
     cmd="${line/-A /-D }"
-    iptables $cmd 2>/dev/null || true
+    printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
   done < <(iptables -S FORWARD 2>/dev/null | grep -F "${RULE_TAG:-$TAG}" || true)
 
   # Legacy cleanup (v2.0.0): rules were tagged with AZHDAR (global). Remove only artifacts from this profile.
@@ -468,13 +473,13 @@ remove_forward_rules_remote(){
   ssh_run_stdin_env_root_best_effort "TAG_MARK=${RULE_TAG:-$TAG}" "TAG_LEGACY=${TAG}" "WG_IF=${WG_IF}" "FORWARD_TCP_PORTS=${FORWARD_TCP_PORTS:-}" "FORWARD_UDP_PORTS=${FORWARD_UDP_PORTS:-}" <<'REMOTE' >/dev/null 2>&1 || true
 set -euo pipefail
 iptables -t nat -S PREROUTING 2>/dev/null | grep -F "${TAG_MARK}" | while read -r line; do
-  cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
 done
 iptables -t nat -S POSTROUTING 2>/dev/null | grep -F "${TAG_MARK}" | while read -r line; do
-  cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
 done
 iptables -S FORWARD 2>/dev/null | grep -F "${TAG_MARK}" | while read -r line; do
-  cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
 done
 
 # Legacy cleanup (v2.0.0): tagged with AZHDAR (global) - remove only rules related to this profile.
@@ -486,22 +491,22 @@ for p in $(parse_ports "${FORWARD_TCP_PORTS:-}"); do
   [[ -n "$p" ]] || continue
   iptables -t nat -S PREROUTING 2>/dev/null | grep -F "${TAG_LEGACY}" | grep -Fq -- "--dport ${p}" && \
     iptables -t nat -S PREROUTING 2>/dev/null | grep -F "${TAG_LEGACY}" | grep -F -- "--dport ${p}" | while read -r line; do
-      cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
     done || true
 done
 for p in $(parse_ports "${FORWARD_UDP_PORTS:-}"); do
   [[ -n "$p" ]] || continue
   iptables -t nat -S PREROUTING 2>/dev/null | grep -F "${TAG_LEGACY}" | grep -Fq -- "--dport ${p}" && \
     iptables -t nat -S PREROUTING 2>/dev/null | grep -F "${TAG_LEGACY}" | grep -F -- "--dport ${p}" | while read -r line; do
-      cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
     done || true
 done
 
 iptables -t nat -S POSTROUTING 2>/dev/null | grep -F "${TAG_LEGACY}" | grep -F -- "-o ${WG_IF}" | while read -r line; do
-  cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
 done
 iptables -S FORWARD 2>/dev/null | grep -F "${TAG_LEGACY}" | grep "${WG_IF}" | while read -r line; do
-  cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
 done
 REMOTE
   ok "Remote forwarding rules removed (best-effort)."
@@ -539,7 +544,7 @@ remove_rst_drop_local(){
   local line cmd
   while read -r line; do
     cmd="${line/-A /-D }"
-    iptables -t raw $cmd 2>/dev/null || true
+    printf '%s' "$cmd" | xargs iptables -t raw 2>/dev/null || true
   done < <(iptables -t raw -S OUTPUT 2>/dev/null | grep -F "${RULE_TAG:-$TAG}" || true)
 
   # Legacy cleanup (v2.0.0)
@@ -553,12 +558,12 @@ remove_rst_drop_remote(){
 set -euo pipefail
 iptables -t raw -S OUTPUT 2>/dev/null | grep -F "${TAG_MARK}" | while read -r line; do
   cmd="${line/-A /-D }"
-  iptables -t raw $cmd 2>/dev/null || true
+  printf '%s' "$cmd" | xargs iptables -t raw 2>/dev/null || true
 done
 
 # Legacy cleanup (v2.0.0): tagged with AZHDAR (global)
 iptables -t raw -S OUTPUT 2>/dev/null | grep -F "${TAG_LEGACY}" | grep -F -- "--sport ${WG_PORT}" | while read -r line; do
-  cmd="${line/-A /-D }"; iptables -t raw $cmd 2>/dev/null || true
+  cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t raw 2>/dev/null || true
 done
 REMOTE
   ok "Remote RST-drop rules removed (best-effort)."
@@ -574,13 +579,13 @@ _remove_legacy_allow_rules_local(){
   for p in ${FORWARD_TCP_PORTS//,/ }; do
     [[ -n "$p" ]] || continue
     while read -r line; do
-      cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
     done < <(iptables -S INPUT 2>/dev/null | grep -F "$legacy" | grep -F -- "--dport ${p}" || true)
   done
   for p in ${FORWARD_UDP_PORTS//,/ }; do
     [[ -n "$p" ]] || continue
     while read -r line; do
-      cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
     done < <(iptables -S INPUT 2>/dev/null | grep -F "$legacy" | grep -F -- "--dport ${p}" || true)
   done
 }
@@ -590,29 +595,29 @@ _remove_legacy_forward_rules_local(){
   for p in ${FORWARD_TCP_PORTS//,/ }; do
     [[ -n "$p" ]] || continue
     while read -r line; do
-      cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
     done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -F "$legacy" | grep -F -- "--dport ${p}" || true)
   done
   for p in ${FORWARD_UDP_PORTS//,/ }; do
     [[ -n "$p" ]] || continue
     while read -r line; do
-      cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
     done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -F "$legacy" | grep -F -- "--dport ${p}" || true)
   done
 
   while read -r line; do
-    cmd="${line/-A /-D }"; iptables -t nat $cmd 2>/dev/null || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat 2>/dev/null || true
   done < <(iptables -t nat -S POSTROUTING 2>/dev/null | grep -F "$legacy" | grep -F -- "-o ${WG_IF}" || true)
 
   while read -r line; do
-    cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
   done < <(iptables -S FORWARD 2>/dev/null | grep -F "$legacy" | grep "${WG_IF}" || true)
 }
 
 _remove_legacy_rst_drop_local(){
   local legacy="${TAG}" line cmd
   while read -r line; do
-    cmd="${line/-A /-D }"; iptables -t raw $cmd 2>/dev/null || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t raw 2>/dev/null || true
   done < <(iptables -t raw -S OUTPUT 2>/dev/null | grep -F "$legacy" | grep -F -- "--sport ${WG_PORT}" || true)
 }
 

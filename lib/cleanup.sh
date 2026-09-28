@@ -252,35 +252,35 @@ _remove_all_tagged_rules_local(){
 
   # filter table
   while read -r line; do
-    cmd="${line/-A /-D }"; iptables $cmd >/dev/null 2>&1 || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables >/dev/null 2>&1 || true
   done < <(iptables -S INPUT 2>/dev/null | grep -F "$tag" || true)
   while read -r line; do
-    cmd="${line/-A /-D }"; iptables $cmd >/dev/null 2>&1 || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables >/dev/null 2>&1 || true
   done < <(iptables -S FORWARD 2>/dev/null | grep -F "$tag" || true)
 
   # nat table
   while read -r line; do
-    cmd="${line/-A /-D }"; iptables -t nat $cmd >/dev/null 2>&1 || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat >/dev/null 2>&1 || true
   done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -F "$tag" || true)
   while read -r line; do
-    cmd="${line/-A /-D }"; iptables -t nat $cmd >/dev/null 2>&1 || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t nat >/dev/null 2>&1 || true
   done < <(iptables -t nat -S POSTROUTING 2>/dev/null | grep -F "$tag" || true)
 
   # raw table
   while read -r line; do
-    cmd="${line/-A /-D }"; iptables -t raw $cmd >/dev/null 2>&1 || true
+    cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t raw >/dev/null 2>&1 || true
   done < <(iptables -t raw -S OUTPUT 2>/dev/null | grep -F "$tag" || true)
 
   # IPv6 (best-effort)
   if have_cmd ip6tables; then
     while read -r line; do
-      cmd="${line/-A /-D }"; ip6tables $cmd >/dev/null 2>&1 || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs ip6tables >/dev/null 2>&1 || true
     done < <(ip6tables -S INPUT 2>/dev/null | grep -F "$tag" || true)
     while read -r line; do
-      cmd="${line/-A /-D }"; ip6tables $cmd >/dev/null 2>&1 || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs ip6tables >/dev/null 2>&1 || true
     done < <(ip6tables -S FORWARD 2>/dev/null | grep -F "$tag" || true)
     while read -r line; do
-      cmd="${line/-A /-D }"; ip6tables -t raw $cmd >/dev/null 2>&1 || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs ip6tables -t raw >/dev/null 2>&1 || true
     done < <(ip6tables -t raw -S OUTPUT 2>/dev/null | grep -F "$tag" || true)
   fi
 }
@@ -294,11 +294,11 @@ rm_rules() {
   local table="$1" chain="$2"
   if [ "$table" = "filter" ]; then
     iptables -S "$chain" 2>/dev/null | grep -F "${TAG}" | while read -r line; do
-      cmd="${line/-A /-D }"; iptables $cmd 2>/dev/null || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
     done
   else
     iptables -t "$table" -S "$chain" 2>/dev/null | grep -F "${TAG}" | while read -r line; do
-      cmd="${line/-A /-D }"; iptables -t "$table" $cmd 2>/dev/null || true
+      cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables -t "$table" 2>/dev/null || true
     done
   fi
 }
@@ -310,9 +310,9 @@ rm_rules nat POSTROUTING
 rm_rules raw OUTPUT
 
 if command -v ip6tables >/dev/null 2>&1; then
-  ip6tables -S INPUT 2>/dev/null | grep -F "${TAG}" | while read -r line; do cmd="${line/-A /-D }"; ip6tables $cmd 2>/dev/null || true; done
-  ip6tables -S FORWARD 2>/dev/null | grep -F "${TAG}" | while read -r line; do cmd="${line/-A /-D }"; ip6tables $cmd 2>/dev/null || true; done
-  ip6tables -t raw -S OUTPUT 2>/dev/null | grep -F "${TAG}" | while read -r line; do cmd="${line/-A /-D }"; ip6tables -t raw $cmd 2>/dev/null || true; done
+  ip6tables -S INPUT 2>/dev/null | grep -F "${TAG}" | while read -r line; do cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs ip6tables 2>/dev/null || true; done
+  ip6tables -S FORWARD 2>/dev/null | grep -F "${TAG}" | while read -r line; do cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs ip6tables 2>/dev/null || true; done
+  ip6tables -t raw -S OUTPUT 2>/dev/null | grep -F "${TAG}" | while read -r line; do cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs ip6tables -t raw 2>/dev/null || true; done
 fi
 REMOTE
 }

@@ -114,6 +114,11 @@ _tunnel_repair_snapshot(){
   cp -a /etc/mimic "$dir/etc-mimic" 2>/dev/null || true
   if have_cmd iptables-save; then iptables-save >"$dir/iptables-save.v4" 2>/dev/null || true; fi
   if have_cmd ip6tables-save; then ip6tables-save >"$dir/iptables-save.v6" 2>/dev/null || true; fi
+  # Keep the newest 10 repair snapshots; each is a few MB and a watchdog
+  # repairing a filtered tunnel all day used to pile up hundreds.
+  ls -1dt "${BASE_DIR}/snapshots/tunnel-repair-"* 2>/dev/null | tail -n +11 | while IFS= read -r _old; do
+    rm -rf -- "$_old" 2>/dev/null || true
+  done
   _tunnel_repair_log_msg "snapshot=${dir}"
   ok "Repair snapshot saved: ${dir}"
 }
@@ -405,12 +410,13 @@ _tunnel_watchdog_save_state(){
     printf 'FAIL_COUNT=%s\n' "${FAIL_COUNT:-0}"
     printf 'LAST_REPAIR_TS=%s\n' "${LAST_REPAIR_TS:-0}"
     printf 'LAST_OK_TS=%s\n' "${LAST_OK_TS:-0}"
+    printf 'REPAIR_FAIL_STREAK=%s\n' "${REPAIR_FAIL_STREAK:-0}"
   } >"$f" 2>/dev/null || true
   chmod 600 "$f" 2>/dev/null || true
 }
 
 _tunnel_watchdog_load_state(){
-  FAIL_COUNT="0"; LAST_REPAIR_TS="0"; LAST_OK_TS="0"
+  FAIL_COUNT="0"; LAST_REPAIR_TS="0"; LAST_OK_TS="0"; REPAIR_FAIL_STREAK="0"
   local f; f="$(_tunnel_watchdog_state_file)"
   if [[ -f "$f" ]]; then
     local _opts; _opts="$(set +o)"
@@ -422,6 +428,21 @@ _tunnel_watchdog_load_state(){
   [[ "${FAIL_COUNT:-0}" =~ ^[0-9]+$ ]] || FAIL_COUNT="0"
   [[ "${LAST_REPAIR_TS:-0}" =~ ^[0-9]+$ ]] || LAST_REPAIR_TS="0"
   [[ "${LAST_OK_TS:-0}" =~ ^[0-9]+$ ]] || LAST_OK_TS="0"
+  [[ "${REPAIR_FAIL_STREAK:-0}" =~ ^[0-9]+$ ]] || REPAIR_FAIL_STREAK="0"
+}
+
+_tunnel_watchdog_effective_cooldown(){
+  # Back off after repairs that did not bring the tunnel back. When the path to
+  # OUT is filtered, no local repair can fix it, and repeating a full repair
+  # every cooldown restarts the shared mimic@<wan> (dropping sibling profiles
+  # on the same WAN) and leaves a config/rules backup each time. The base
+  # cooldown doubles per failed repair in a row, capped at 6 hours.
+  local base="$1" streak="${REPAIR_FAIL_STREAK:-0}" cap=21600 eff
+  (( streak > 6 )) && streak=6
+  eff=$(( base << streak ))
+  (( eff > cap )) && eff=$cap
+  (( eff < base )) && eff=$base
+  echo "$eff"
 }
 
 azhdar_tunnel_watchdog(){
@@ -446,6 +467,7 @@ azhdar_tunnel_watchdog(){
 
   if _tunnel_repair_health_quiet; then
     FAIL_COUNT="0"
+    REPAIR_FAIL_STREAK="0"
     LAST_OK_TS="$now"
     _tunnel_watchdog_save_state
     _tunnel_repair_log_msg "watchdog healthy profile=${PROFILE}"
@@ -459,8 +481,9 @@ azhdar_tunnel_watchdog(){
     return 0
   fi
 
+  cooldown="$(_tunnel_watchdog_effective_cooldown "$cooldown")"
   if (( now - LAST_REPAIR_TS < cooldown )); then
-    _tunnel_repair_log_msg "watchdog cooldown active; skipping repair"
+    _tunnel_repair_log_msg "watchdog cooldown active (${cooldown}s, failed repairs in a row=${REPAIR_FAIL_STREAK}); skipping repair"
     _tunnel_watchdog_save_state
     return 0
   fi
@@ -469,10 +492,12 @@ azhdar_tunnel_watchdog(){
   _tunnel_watchdog_save_state
   if azhdar_repair_tunnel --auto --yes; then
     FAIL_COUNT="0"
+    REPAIR_FAIL_STREAK="0"
     LAST_OK_TS="$(date +%s 2>/dev/null || echo 0)"
   else
     # Keep a small fail count so the next run can try again after cooldown.
     FAIL_COUNT="$threshold"
+    REPAIR_FAIL_STREAK=$((REPAIR_FAIL_STREAK + 1))
   fi
   _tunnel_watchdog_save_state
   return 0

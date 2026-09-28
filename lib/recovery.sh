@@ -33,9 +33,9 @@ _recovery_delete_rule_lines(){
     [[ -n "$line" ]] || continue
     cmd="${line/-A /-D }"
     if [[ "$table" == "filter" ]]; then
-      iptables $cmd >/dev/null 2>&1 || true
+      printf '%s' "$cmd" | xargs iptables >/dev/null 2>&1 || true
     else
-      iptables -t "$table" $cmd >/dev/null 2>&1 || true
+      printf '%s' "$cmd" | xargs iptables -t "$table" >/dev/null 2>&1 || true
     fi
   done
 }
@@ -47,9 +47,9 @@ _recovery_delete_ip6_rule_lines(){
     [[ -n "$line" ]] || continue
     cmd="${line/-A /-D }"
     if [[ "$table" == "filter" ]]; then
-      ip6tables $cmd >/dev/null 2>&1 || true
+      printf '%s' "$cmd" | xargs ip6tables >/dev/null 2>&1 || true
     else
-      ip6tables -t "$table" $cmd >/dev/null 2>&1 || true
+      printf '%s' "$cmd" | xargs ip6tables -t "$table" >/dev/null 2>&1 || true
     fi
   done
 }
@@ -132,6 +132,7 @@ _recovery_clean_saved_iptables_local(){
     [[ -f "$f" ]] || continue
     bak="${f}.azhdar-bak.$(_recovery_ts)"
     cp -a "$f" "$bak" 2>/dev/null || true
+    prune_backups "${f}.azhdar-bak." 10
     # Drop tagged AZHDAR lines from saved persistent rules. Untagged runtime
     # poison is removed before save below, so saving current tables cleans it too.
     grep -v -F "${TAG:-AZHDAR}" "$bak" >"$f" 2>/dev/null || cp -a "$bak" "$f" 2>/dev/null || true

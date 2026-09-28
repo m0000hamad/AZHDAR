@@ -3,6 +3,32 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.33: rule deletion that actually matches, watchdog backoff, bounded backups
+
+Found while chasing a profile whose OUT address had become filtered from the
+IR side (ICMP passes, but any non-TLS TCP flow is cut after about 8.6 KB, so
+the Mimic flow and SSH to OUT both stall). Nothing on the servers can repair
+that, and it exposed three problems in how AZHDAR behaves around it.
+
+- Every place that deletes rules by replaying `iptables -S` output (about 45
+  sites in `firewall.sh`, `cleanup.sh`, `recovery.sh`, local and remote) ran
+  `iptables $cmd`. `iptables -S` prints `--comment "AZHDAR:s6"` with quotes
+  because of the colon, and word splitting kept those quotes, so `-D` never
+  matched a profile-tagged rule. Stale DNAT/INPUT/raw rules from every old
+  tunnel subnet and port were never removed; one server carried eight DNAT
+  rules for the same public port. The v3.2.32 DNAT dedup was affected too.
+  The line is now passed through `xargs`, which strips the quoting without
+  shell expansion.
+- The watchdog retried a failed repair every cooldown forever. Each repair
+  restarts the shared `mimic@<wan>`, so a sibling profile on the same WAN was
+  dropped about 40 times a day. The cooldown now doubles per failed repair in
+  a row (600s, 1200s, 2400s, ...) up to 6 hours, and resets on the first
+  healthy check or successful repair.
+- Each repair left a WireGuard config backup (local and on OUT), an
+  `/etc/iptables/rules.v4` backup and a repair snapshot, with no limit: 300+
+  config backups on OUT and 152 snapshots (570 MB) on IR. Only the newest 10
+  of each are kept now.
+
 ## AZHDAR v3.2.32: scope repair to one profile's WAN, self-heal duplicate DNAT
 
 Two live incidents from repairing one profile bouncing/breaking another

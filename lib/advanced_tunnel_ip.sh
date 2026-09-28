@@ -365,6 +365,7 @@ patch_listen_port_file(){
   port="$2"
   [ -f "$cfg" ] || return 2
   cp -a "$cfg" "$cfg.bak.$(date +%s)" 2>/dev/null || true
+  ls -1t "$cfg".bak.* 2>/dev/null | tail -n +11 | xargs -r rm -f -- 2>/dev/null || true
   if grep -qE '^[[:space:]]*ListenPort[[:space:]]*=' "$cfg" 2>/dev/null; then
     sed -i -E "s|^[[:space:]]*ListenPort[[:space:]]*=.*|ListenPort = ${port}|" "$cfg" || return 1
   else

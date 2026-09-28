@@ -429,6 +429,7 @@ runtime_status="interface-down"
 cfg="/etc/wireguard/${WG_IF}.conf"
 if [ -f "$cfg" ]; then
   cp -a "$cfg" "$cfg.bak.$(date +%s)" 2>/dev/null || true
+  ls -1t "$cfg".bak.* 2>/dev/null | tail -n +11 | xargs -r rm -f -- 2>/dev/null || true
   cfg_ok=1
   if grep -qi '^[[:space:]]*MTU[[:space:]]*=' "$cfg" 2>/dev/null; then
     sed -i -E "s|^[[:space:]]*MTU[[:space:]]*=.*|MTU = ${MTU}|I" "$cfg" 2>/dev/null || cfg_ok=0

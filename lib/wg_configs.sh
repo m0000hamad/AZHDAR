@@ -70,6 +70,7 @@ backup_file(){
   local f="$1"
   [[ -f "$f" ]] || return 0
   cp -a "$f" "${f}.bak.$(date +%s)" 2>/dev/null || true
+  prune_backups "${f}.bak." 10
 }
 
 write_wg_conf_local(){
@@ -152,6 +153,7 @@ mkdir -p /etc/wireguard
 umask 077
 cfg="/etc/wireguard/${WG_IF}.conf"
 if [ -f "$cfg" ]; then cp -a "$cfg" "$cfg.bak.$(date +%s)" || true; fi
+ls -1t "$cfg".bak.* 2>/dev/null | tail -n +11 | xargs -r rm -f -- 2>/dev/null || true
 
 keyfile="/etc/wireguard/${WG_IF}.key"
 if [ ! -f "$keyfile" ]; then
