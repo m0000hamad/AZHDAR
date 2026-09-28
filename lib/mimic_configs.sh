@@ -621,10 +621,19 @@ EOF
 mimic_profile_block_remote(){
   # Print Mimic filter lines for a profile on the OUT host.
   local name="$1"
-  local wg_port out_local ir_ip
+  local wg_port out_local ir_ip ir_local
   wg_port="$(profile_read_var "$name" WG_PORT 2>/dev/null || true)"
   out_local="$(profile_read_var "$name" OUT_LOCAL_IP 2>/dev/null || true)"
   ir_ip="$(profile_read_var "$name" IR_PUBLIC_IP 2>/dev/null || true)"
+  ir_local="$(profile_read_var "$name" IR_LOCAL_IP 2>/dev/null || true)"
+  # OUT's filter must match the source IP the tunnel packets actually carry.
+  # IR_PUBLIC_IP comes from a what-is-my-IP web service, which on multi-IP or
+  # policy-routed hosts can report a different address than the one the route
+  # to OUT uses. A public IR_LOCAL_IP is that route's real source, so prefer it;
+  # a private one means IR sits behind NAT and IR_PUBLIC_IP is the right choice.
+  if is_ipv4 "$ir_local" && ! is_private_ipv4 "$ir_local"; then
+    ir_ip="$ir_local"
+  fi
   [[ -n "$wg_port" && -n "$out_local" && -n "$ir_ip" ]] || return 1
   cat <<EOF
 

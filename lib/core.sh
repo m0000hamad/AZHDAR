@@ -2,7 +2,7 @@
 # Part of AZHDAR (modular)
 
 # -------------------- Globals --------------------
-SCRIPT_VERSION="3.2.32"
+SCRIPT_VERSION="3.2.33"
 
 # TAG is used for logs and as the base marker for firewall comments.
 TAG="AZHDAR"
@@ -248,6 +248,20 @@ is_ipv4(){
     (( o >= 0 && o <= 255 )) || return 1
   done
   return 0
+}
+
+is_private_ipv4(){
+  # RFC1918, CGNAT (100.64/10), loopback and link-local: addresses that never
+  # appear as a source on the public internet.
+  local a b _
+  IFS='.' read -r a b _ <<<"$1"
+  [[ "$a" =~ ^[0-9]+$ && "$b" =~ ^[0-9]+$ ]] || return 1
+  (( a == 10 || a == 127 )) && return 0
+  (( a == 172 && b >= 16 && b <= 31 )) && return 0
+  (( a == 192 && b == 168 )) && return 0
+  (( a == 169 && b == 254 )) && return 0
+  (( a == 100 && b >= 64 && b <= 127 )) && return 0
+  return 1
 }
 
 is_ipv6(){
