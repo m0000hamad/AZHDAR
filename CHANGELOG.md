@@ -3,6 +3,20 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.33: OUT Mimic filter uses IR's real source IP
+
+A live incident: a profile's tunnel never came up. IR's Mimic kept sending SYN
+to OUT and timing out, and WireGuard on IR showed `0 B received`.
+
+- The OUT side's Mimic filter was written as `remote=${IR_PUBLIC_IP}`. That
+  value comes from a what-is-my-IP web service, which on a multi-IP or
+  policy-routed IR host can report a different address (here `31.171.x`) than
+  the one the route to OUT actually uses (`185.10.x`, already saved as
+  `IR_LOCAL_IP`). OUT's Mimic then ignored every tunnel packet from IR.
+- `mimic_profile_block_remote()` now prefers `IR_LOCAL_IP` when it is a public
+  address, and falls back to `IR_PUBLIC_IP` only when IR sits behind NAT
+  (private/CGNAT source). Adds `is_private_ipv4()` to `core.sh`.
+
 ## AZHDAR v3.2.32: scope repair to one profile's WAN, self-heal duplicate DNAT
 
 Two live incidents from repairing one profile bouncing/breaking another
