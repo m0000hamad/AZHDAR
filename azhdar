@@ -62,6 +62,8 @@ source "${LIB_DIR}/main_menu.sh"
 # shellcheck source=/dev/null
 source "${LIB_DIR}/ssh_fallback.sh"
 # shellcheck source=/dev/null
+source "${LIB_DIR}/ssh_keys.sh"
+# shellcheck source=/dev/null
 source "${LIB_DIR}/advanced_tunnel_ip.sh"
 # shellcheck source=/dev/null
 source "${LIB_DIR}/migrate_legacy.sh"

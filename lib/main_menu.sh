@@ -140,6 +140,7 @@ main_menu(){
     echo "14) Repair tunnel / auto watchdog"
     echo "15) Emergency IR recovery (no rebuild)"
     echo "16) Live monitor (clients / uptime / traffic)"
+    echo "17) SSH key (one private key for all OUT servers)"
     echo " 0) Exit"
     hr
 
@@ -208,6 +209,9 @@ main_menu(){
       16)
         ensure_profile_selected || { pause; continue; }
         menu_monitor || true
+        ;;
+      17)
+        menu_ssh_key || true
         ;;
       0)
         exit 0

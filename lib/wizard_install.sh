@@ -298,7 +298,11 @@ case "$tsel" in
     SSH_MGMT_LAST_PORT=""
     ;;
 esac
-  read -rsp "OUT SSH password (SSH key recommended): " _pw || true
+  if ssh_shared_key_present; then
+    read -rsp "OUT SSH password (ENTER = keep saved / use the shared SSH key): " _pw || true
+  else
+    read -rsp "OUT SSH password (SSH key recommended): " _pw || true
+  fi
   echo
   if [[ -n "${_pw:-}" ]]; then
     OUT_SSH_PASS="${_pw}"
@@ -311,7 +315,7 @@ esac
       fi
     fi
   fi
-  read -rp "OUT SSH identity file (optional) [${OUT_SSH_IDENTITY:-none}]: " ident || true
+  read -rp "OUT SSH identity file (optional) [${OUT_SSH_IDENTITY:-$(ssh_shared_key_present && echo 'shared key' || echo none)}]: " ident || true
   ident="${ident:-}"
   ident="${ident//$'\r'/}"
   ident="${ident//$'\n'/}"
@@ -320,6 +324,10 @@ esac
 
   # Preflight (sets REMOTE_SUDO)
   remote_preflight || { pause; return 1; }
+  # Smart Wizard promises to ask only ports; offer the shared key elsewhere.
+  if [[ "$smart" != "1" ]]; then
+    ssh_key_offer_install_loaded_profile || true
+  fi
 
   # Port selection and reverse-forward
   local suggested

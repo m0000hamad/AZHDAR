@@ -146,10 +146,14 @@ profile_add_wizard(){
   OUT_PUBLIC_IP="$OUT_SSH_HOST"
   OUT_SSH_PORT="$(prompt_port "OUT SSH port" "22")"
   OUT_SSH_USER="$(prompt_nonempty "OUT SSH user" "root")"
-  read -rsp "OUT SSH password : " _pw || true
+  if ssh_shared_key_present; then
+    read -rsp "OUT SSH password (ENTER = use the shared SSH key only): " _pw || true
+  else
+    read -rsp "OUT SSH password : " _pw || true
+  fi
   echo
   OUT_SSH_PASS="${_pw:-}"
-  read -rp "OUT SSH identity file (optional) [none]: " ident || true
+  read -rp "OUT SSH identity file (optional) [$(ssh_shared_key_present && echo 'shared key' || echo none)]: " ident || true
   ident="${ident:-}"
   ident="${ident//$'\r'/}"
   ident="${ident//$'\n'/}"
@@ -173,6 +177,7 @@ profile_add_wizard(){
 
   # Determine REMOTE_SUDO and suggest a port
   if ssh_check; then
+    ssh_key_offer_install_loaded_profile || true
     # remote_preflight will also validate; but for add we keep it light and do full preflight later on install
     remote_preflight || true
     local sug

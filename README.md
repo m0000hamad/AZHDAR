@@ -6,7 +6,7 @@
 
 **تانل وایرگاردی که به‌شکل TCP سفر می‌کند**
 
-![version](https://img.shields.io/badge/version-3.2.33-0E7A88)
+![version](https://img.shields.io/badge/version-3.2.34-0E7A88)
 ![platform](https://img.shields.io/badge/Ubuntu%2024.04%20%7C%20Debian%2012-informational)
 ![license](https://img.shields.io/badge/license-proprietary-9E5C0C)
 
@@ -144,6 +144,7 @@ Labels are shown exactly as they appear in the terminal.
 | **14** | `Repair tunnel / auto watchdog` | Manual repair, deep repair with tunnel-IP auto-heal, and the watchdog controls. | تعمیر دستی، تعمیر عمیق با خوددرمانی آدرس تانل، و کنترل‌های دیده‌بان. |
 | **15** | `Emergency IR recovery` | Clears the relay's runtime state without rebuilding the profile and without touching sshd. | وضعیت زمان اجرای رله را بدون بازسازی پروفایل و بدون دست‌زدن به sshd پاک می‌کند. |
 | **16** | `Live monitor (clients / uptime / traffic)` | Refreshing dashboard: connections and distinct client IPs, uptime and restart counts, traffic rates and totals. Read-only. | داشبورد زنده: اتصال‌ها و IPهای یکتای کلاینت، آپتایم و تعداد ری‌استارت، نرخ و مجموع ترافیک. فقط خواندنی. |
+| **17** | `SSH key` | One private key for every exit server. Servers that have its public key log in without a password; the saved password stays as fallback. | یک کلید خصوصی برای همه سرورهای خروج. سرورهایی که کلید عمومی‌اش را دارند بدون پسورد وصل می‌شوند؛ پسورد ذخیره‌شده پشتیبان می‌ماند. |
 | **0** | `Exit` | Leaves the menu. Services keep running. | از منو خارج می‌شود. سرویس‌ها به کارشان ادامه می‌دهند. |
 
 <details>
@@ -184,6 +185,17 @@ Labels are shown exactly as they appear in the terminal.
 | 4 | Status | وضعیت |
 | 5 | Last 120 log lines | ۱۲۰ خط آخر لاگ |
 | 6 | Remove or reset for this profile | حذف یا بازنشانی برای این پروفایل |
+
+### `17) SSH key`
+
+| # | English | فارسی |
+|---|---|---|
+| 1 | Generate a new ed25519 key pair | ساخت جفت‌کلید ed25519 جدید |
+| 2 | Import an existing private key (paste or file path; a passphrase is asked once and removed from AZHDAR's copy) | وارد کردن کلید خصوصی موجود (paste یا مسیر فایل؛ passphrase یک بار پرسیده و از نسخه اژدر حذف می‌شود) |
+| 3 | Show the public key to put on servers or in the VPS panel | نمایش کلید عمومی برای گذاشتن روی سرورها یا پنل VPS |
+| 4 | Install the public key on this profile's exit server | نصب کلید عمومی روی سرور خروج این پروفایل |
+| 5 | Install the public key on every profile's exit server | نصب کلید عمومی روی سرور خروج همه پروفایل‌ها |
+| 6 | Remove the shared key | حذف کلید مشترک |
 
 ### `2) Manage profiles`
 
@@ -245,6 +257,7 @@ azhdar --version
 | Path | English | فارسی |
 |---|---|---|
 | `/etc/azhdar/profiles/` | One `.env` per profile: ports, addresses, keys, forwarding, SSH settings. | یک `.env` برای هر پروفایل: پورت‌ها، آدرس‌ها، کلیدها، فورواردینگ، تنظیمات SSH. |
+| `/etc/azhdar/ssh/id_azhdar` | The shared SSH private key (root only, no passphrase) and its `.pub`. A profile's own identity file takes priority. | کلید خصوصی SSH مشترک (فقط root، بدون passphrase) و `.pub` آن. فایل identity خود پروفایل اولویت دارد. |
 | `/etc/azhdar/manager.log` | What the tool did and when. | اینکه ابزار چه کرد و کِی. |
 | `/etc/wireguard/<profile>.conf` | Generated WireGuard config. Edit through the menu, not by hand, so both ends stay in step. | کانفیگ تولیدشده وایرگارد. از منو ویرایش کنید نه دستی، تا دو سر هماهنگ بمانند. |
 | `/etc/mimic/<iface>.conf` | Mimic filters, one local and one remote, both carrying the tunnel port. | فیلترهای میمیک، یکی محلی و یکی ریموت، هر دو حامل پورت تانل. |

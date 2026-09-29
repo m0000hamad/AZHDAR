@@ -337,8 +337,11 @@ ssh_fallback_ensure_key_auth(){
   mkdir -p /root/.ssh >/dev/null 2>&1 || true
   chmod 700 /root/.ssh >/dev/null 2>&1 || true
 
-  local key="/root/.ssh/id_ed25519"
-  if [[ ! -f "$key" || ! -f "${key}.pub" ]]; then
+  # Use the profile identity or the shared AZHDAR key when one exists, so the
+  # service authenticates with the same key the menu installed on OUT.
+  local ident; ident="$(ssh_identity)"
+  local key="${ident:-/root/.ssh/id_ed25519}"
+  if [[ -z "$ident" && ( ! -f "$key" || ! -f "${key}.pub" ) ]]; then
     ssh-keygen -t ed25519 -N "" -f "$key" >/dev/null 2>&1 || true
   fi
   chmod 600 "$key" >/dev/null 2>&1 || true
@@ -358,8 +361,8 @@ ssh_fallback_ensure_key_auth(){
   )
 
   local -a ident_opt=()
-  if [[ -n "${OUT_SSH_IDENTITY:-}" ]]; then
-    ident_opt+=( -i "${OUT_SSH_IDENTITY}" )
+  if [[ -n "$ident" ]]; then
+    ident_opt+=( -i "$ident" -o IdentitiesOnly=yes )
   fi
 
   # 1) Fast key-only check
@@ -374,7 +377,7 @@ ssh_fallback_ensure_key_auth(){
     have_pw=1
   fi
 
-  if (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  if (( have_pw == 0 )) && [[ -z "$ident" ]]; then
     # Interactive prompt (do NOT save unless user already had OUT_SSH_PASS).
     if ssh_interactive; then
       warn "SSH key auth is not set up yet."
@@ -389,7 +392,7 @@ ssh_fallback_ensure_key_auth(){
     fi
   fi
 
-  if (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  if (( have_pw == 0 )) && [[ -z "$ident" ]]; then
     warn "No password or identity key available to install an SSH key automatically."
     warn "Fix manually: ssh-copy-id -p ${port} ${user}@${host}"
     return 1
@@ -407,14 +410,14 @@ ssh_fallback_ensure_key_auth(){
   fi
 
   local pub
-  pub="$(cat "${key}.pub" 2>/dev/null || true)"
+  pub="$(ssh-keygen -y -f "$key" 2>/dev/null </dev/null || cat "${key}.pub" 2>/dev/null || true)"
   [[ -n "$pub" ]] || { warn "Failed to read local public key."; return 1; }
 
   local rcmd
   rcmd="mkdir -p /root/.ssh && chmod 700 /root/.ssh; touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys; grep -qxF $(printf %q \"$pub\") /root/.ssh/authorized_keys || echo $(printf %q \"$pub\") >> /root/.ssh/authorized_keys"
 
   local -a pass_opts=()
-  if [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  if [[ -z "$ident" ]]; then
     pass_opts=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=3)
   else
     pass_opts=(-o PubkeyAuthentication=yes -o PreferredAuthentications=publickey,password,keyboard-interactive -o NumberOfPasswordPrompts=3)
@@ -592,10 +595,11 @@ ssh_fallback_write_service_local(){
   ssh_prepare_known_hosts_for "$host" "$port" "$kh" >/dev/null 2>&1 || true
 
   local -a ident_arr=()
-  local ident_opt=""
-  if [[ -n "${OUT_SSH_IDENTITY:-}" ]]; then
-    ident_arr=( -i "${OUT_SSH_IDENTITY}" )
-    ident_opt="-i ${OUT_SSH_IDENTITY}"
+  local ident_opt="" ident
+  ident="$(ssh_identity)"
+  if [[ -n "$ident" ]]; then
+    ident_arr=( -i "$ident" -o IdentitiesOnly=yes )
+    ident_opt="-i ${ident} -o \"IdentitiesOnly yes\""
   fi
 
   local fargs

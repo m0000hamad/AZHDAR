@@ -23,6 +23,56 @@ ssh_tty_flag_ok(){
   [[ -t 0 ]]
 }
 
+# -------------------- Shared SSH key --------------------
+# One private key stored on this server for every OUT profile. Any OUT server
+# whose authorized_keys holds the matching public key connects without a
+# password; a saved password stays as the fallback. A profile's own
+# OUT_SSH_IDENTITY still wins over the shared key. The key is kept without a
+# passphrase on purpose: sshpass would otherwise feed the server password to
+# the local passphrase prompt (see lib/ssh_keys.sh).
+
+ssh_shared_key_path(){
+  echo "${AZHDAR_SSH_KEY:-${BASE_DIR:-/etc/azhdar}/ssh/id_azhdar}"
+}
+
+ssh_shared_key_present(){
+  local k; k="$(ssh_shared_key_path)"
+  [[ -f "$k" && -r "$k" ]]
+}
+
+ssh_identity(){
+  # Effective identity file for OUT SSH (empty when none). Always returns 0 so
+  # `x="$(ssh_identity)"` never trips errexit / the global ERR trap.
+  if [[ -n "${OUT_SSH_IDENTITY:-}" ]]; then
+    printf '%s' "$OUT_SSH_IDENTITY"
+  elif ssh_shared_key_present; then
+    ssh_shared_key_path
+  fi
+  return 0
+}
+
+ssh_key_only_ok(){
+  # usage: ssh_key_only_ok <host> <port> [identity]
+  # True when the identity (default: effective one) logs in without a password.
+  local host="$1" port="${2:-22}" ident="${3:-}" kh
+  [[ -n "$ident" ]] || ident="$(ssh_identity)"
+  [[ -n "$host" && -n "$ident" && -r "$ident" ]] || return 1
+  # No ssh-keyscan here: OpenSSH >= 9.8 counts every scan connection toward
+  # PerSourcePenalties, and this probe often runs right before a full login.
+  # A stale host key only makes the probe report "not ok"; the next ssh_run
+  # refreshes known_hosts anyway.
+  kh="$(ssh_known_hosts_file_for "$host" "$port")"
+  mkdir -p "$(dirname "$kh")" >/dev/null 2>&1 || true
+  ssh -p "$port" \
+    -o BatchMode=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no \
+    -o PubkeyAuthentication=yes -o PreferredAuthentications=publickey \
+    -o IdentitiesOnly=yes -i "$ident" \
+    -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$kh" -o GlobalKnownHostsFile=/dev/null \
+    -o CheckHostIP=no -o UpdateHostKeys=no -o ControlMaster=no \
+    -o ConnectTimeout="${AZHDAR_SSH_CONNECT_TIMEOUT:-8}" \
+    "${OUT_SSH_USER:-root}@${host}" true >/dev/null 2>&1 </dev/null
+}
+
 ssh_safe_token(){
   # Return a filesystem-safe short token for host/port/profile-specific files.
   local raw="$1"
@@ -507,12 +557,13 @@ ssh_base_opts_for(){
 ssh_exec_cmd_on(){
   # usage: ssh_exec_cmd_on <host> <port> <label> <command>
   local host="$1" port="$2" label="$3" cmd="$4"
-  local have_pw=0 interactive=0 kh cp rc
+  local have_pw=0 interactive=0 kh cp rc ident
   if [[ -n "${OUT_SSH_PASS:-}" ]] && ! have_cmd sshpass; then
     ssh_ensure_sshpass_for_password >/dev/null 2>&1 || true
   fi
   [[ -n "${OUT_SSH_PASS:-}" ]] && have_cmd sshpass && have_pw=1 || true
   ssh_can_prompt && interactive=1 || true
+  ident="$(ssh_identity)"
 
   kh="$(ssh_known_hosts_file_for "$host" "$port")"
   ssh_prepare_known_hosts_for "$host" "$port" "$kh" >/dev/null 2>&1 || true
@@ -532,23 +583,27 @@ ssh_exec_cmd_on(){
     -o NumberOfPasswordPrompts=3
   )
   # Password auth through sshpass must not be eaten by encrypted local keys.
-  # If no explicit identity was configured, skip publickey and test the supplied
-  # password directly. Manual SSH can work while sshpass fails otherwise,
-  # because sshpass may send the server password to a local key passphrase prompt.
-  if (( have_pw == 1 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  # If no identity (profile or shared key) is available, skip publickey and
+  # test the supplied password directly. Manual SSH can work while sshpass
+  # fails otherwise, because sshpass may send the server password to a local
+  # key passphrase prompt.
+  if (( have_pw == 1 )) && [[ -z "$ident" ]]; then
     opts+=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive)
   else
     opts+=(-o PubkeyAuthentication=yes -o PreferredAuthentications=publickey,password,keyboard-interactive)
   fi
 
-  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]] && ssh_tty_flag_ok; then
+  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "$ident" ]] && ssh_tty_flag_ok; then
     flags+=(-tt)
   fi
-  if (( interactive == 0 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  # Nobody can answer a prompt: fail fast instead of waiting on /dev/tty.
+  if (( interactive == 0 )) && (( have_pw == 0 )); then
     opts+=(-o BatchMode=yes -o NumberOfPasswordPrompts=0)
   fi
-  if [[ -n "${OUT_SSH_IDENTITY:-}" ]]; then
-    opts+=(-i "${OUT_SSH_IDENTITY}")
+  if [[ -n "$ident" ]]; then
+    # IdentitiesOnly: agent/default keys must not use up the server's
+    # MaxAuthTries before the password fallback gets its turn.
+    opts+=(-i "$ident" -o IdentitiesOnly=yes)
   fi
   if [[ "${SSH_USE_MASTER:-0}" == "1" ]]; then
     cp="$(ssh_control_path_for "$host" "$port" "${OUT_SSH_USER:-root}")"
@@ -626,12 +681,13 @@ ssh_pick_working_target(){
 ssh_exec_stdin_on(){
   # usage: ssh_exec_stdin_on <host> <port> <label> [remote command...]
   local host="$1" port="$2" label="$3"; shift 3
-  local have_pw=0 interactive=0 kh cp rc
+  local have_pw=0 interactive=0 kh cp rc ident
   if [[ -n "${OUT_SSH_PASS:-}" ]] && ! have_cmd sshpass; then
     ssh_ensure_sshpass_for_password >/dev/null 2>&1 || true
   fi
   [[ -n "${OUT_SSH_PASS:-}" ]] && have_cmd sshpass && have_pw=1 || true
   ssh_can_prompt && interactive=1 || true
+  ident="$(ssh_identity)"
   kh="$(ssh_known_hosts_file_for "$host" "$port")"
   ssh_prepare_known_hosts_for "$host" "$port" "$kh" >/dev/null 2>&1 || true
 
@@ -649,23 +705,20 @@ ssh_exec_stdin_on(){
     -o PasswordAuthentication=yes
     -o NumberOfPasswordPrompts=3
   )
-  # Password auth through sshpass must not be eaten by encrypted local keys.
-  # If no explicit identity was configured, skip publickey and test the supplied
-  # password directly. Manual SSH can work while sshpass fails otherwise,
-  # because sshpass may send the server password to a local key passphrase prompt.
-  if (( have_pw == 1 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  # Same auth selection as ssh_exec_cmd_on().
+  if (( have_pw == 1 )) && [[ -z "$ident" ]]; then
     opts+=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive)
   else
     opts+=(-o PubkeyAuthentication=yes -o PreferredAuthentications=publickey,password,keyboard-interactive)
   fi
-  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]] && ssh_tty_flag_ok; then
+  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "$ident" ]] && ssh_tty_flag_ok; then
     flags+=(-tt)
   fi
-  if (( interactive == 0 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  if (( interactive == 0 )) && (( have_pw == 0 )); then
     opts+=(-o BatchMode=yes -o NumberOfPasswordPrompts=0)
   fi
-  if [[ -n "${OUT_SSH_IDENTITY:-}" ]]; then
-    opts+=(-i "${OUT_SSH_IDENTITY}")
+  if [[ -n "$ident" ]]; then
+    opts+=(-i "$ident" -o IdentitiesOnly=yes)
   fi
   if [[ "${SSH_USE_MASTER:-0}" == "1" ]]; then
     cp="$(ssh_control_path_for "$host" "$port" "${OUT_SSH_USER:-root}")"
@@ -858,8 +911,9 @@ ssh_autodetect_port(){
   # Try to find the correct SSH port when OUT_SSH_PORT is wrong.
   ssh_require_vars || return 1
   local host="${OUT_SSH_HOST}" user="${OUT_SSH_USER:-root}"
+  local ident; ident="$(ssh_identity)"
   local ident_opt=()
-  [[ -n "${OUT_SSH_IDENTITY:-}" ]] && ident_opt=(-i "${OUT_SSH_IDENTITY}")
+  [[ -n "$ident" ]] && ident_opt=(-i "$ident" -o IdentitiesOnly=yes)
 
   local -a cand=( "${OUT_SSH_PORT:-22}" 22 2222 2233 2200 2022 222 22222 9922 10022 443 8443 8080 80 10443 992 50022 60022 65522 )
   local -A seen=()
@@ -887,7 +941,7 @@ ssh_autodetect_port(){
         -o ConnectTimeout="${AZHDAR_SSH_CONNECT_TIMEOUT:-8}" -o ServerAliveInterval=10 -o ServerAliveCountMax=1
         -o KbdInteractiveAuthentication=yes -o PasswordAuthentication=yes -o NumberOfPasswordPrompts=3
       )
-      if [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+      if [[ -z "$ident" ]]; then
         pw_auth_opts+=(-o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive)
       else
         pw_auth_opts+=(-o PubkeyAuthentication=yes -o PreferredAuthentications=publickey,password,keyboard-interactive)
@@ -898,7 +952,7 @@ ssh_autodetect_port(){
         echo "$p"; return 0
       fi
     else
-      if [[ -z "${OUT_SSH_PASS:-}" && -z "${OUT_SSH_IDENTITY:-}" ]]; then
+      if [[ -z "${OUT_SSH_PASS:-}" && -z "$ident" ]]; then
         echo "$p"; return 0
       fi
       if ssh -p "$p" \
@@ -959,7 +1013,7 @@ ssh_check(){
   local interactive=0 have_pw=0 quiet=1
   ssh_can_prompt && interactive=1 || true
   [[ -n "${OUT_SSH_PASS:-}" && "$(command -v sshpass 2>/dev/null || true)" != "" ]] && have_pw=1 || true
-  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "${OUT_SSH_IDENTITY:-}" ]]; then
+  if (( interactive == 1 )) && (( have_pw == 0 )) && [[ -z "$(ssh_identity)" ]]; then
     quiet=0
   fi
 
@@ -1109,7 +1163,7 @@ ssh_check(){
 
   err "SSH failed on port ${OUT_SSH_PORT}."
   if (( direct_is_ssh == 1 )); then
-    echo -e "${DIM}Fix:${RST} If the manual command works, install sshpass or set an SSH identity file so AZHDAR can automate remote steps."
+    echo -e "${DIM}Fix:${RST} If the manual command works, install sshpass or set a shared SSH key (main menu -> SSH key) so AZHDAR can automate remote steps."
   fi
   echo -e "${DIM}Quick direct test:${RST} ssh -p ${OUT_SSH_PORT} ${OUT_SSH_USER}@${OUT_SSH_HOST}"
   if [[ -n "$wg" ]]; then

@@ -3,6 +3,35 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.34: one shared SSH key for every exit server
+
+Until now each profile could point at its own identity file, and everything
+else meant a saved password pushed through sshpass. With many exit servers
+that is one password per box.
+
+- New main menu entry `17) SSH key`. It generates an ed25519 pair or imports
+  an existing private key (pasted or by path; CRLF from Windows is stripped,
+  PuTTY `.ppk` goes through `puttygen` when installed, a pasted public key is
+  refused with an explanation). The key is stored as
+  `/etc/azhdar/ssh/id_azhdar`, mode 600, without a passphrase: sshpass would
+  otherwise answer the local passphrase prompt with the server password. An
+  encrypted key is unlocked once and only AZHDAR's copy loses the passphrase.
+- Every profile without its own `OUT_SSH_IDENTITY` now offers this key first
+  (`-i ... -o IdentitiesOnly=yes`) and falls back to the saved password in
+  the same connection. Before, a saved password disabled public-key auth
+  entirely. `IdentitiesOnly` also stops agent/default keys from using up the
+  server's `MaxAuthTries` before the password gets its turn.
+- The menu can install the public key on the current profile's exit server or
+  on all profiles at once, logging in with whatever works today and checking
+  a key-only login afterwards. The add-profile and classic install wizards
+  offer this once when the key is not trusted yet (Smart Wizard still asks
+  only ports). Pressing ENTER at the password prompt now means "key only".
+- The SSH fallback systemd unit and its key setup use the same key instead of
+  generating a separate `/root/.ssh/id_ed25519` when a shared key exists.
+- Non-interactive runs (watchdog, boot) without a password now always use
+  `BatchMode`, so a server that rejects the key fails fast instead of waiting
+  on a prompt nobody can answer.
+
 ## AZHDAR v3.2.33: rule deletion that actually matches, watchdog backoff, bounded backups
 
 Found while chasing a profile whose OUT address had become filtered from the
