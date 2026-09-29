@@ -6,7 +6,7 @@
 
 **تانل وایرگاردی که به‌شکل TCP سفر می‌کند**
 
-![version](https://img.shields.io/badge/version-3.2.35-0E7A88)
+![version](https://img.shields.io/badge/version-3.2.36-0E7A88)
 ![platform](https://img.shields.io/badge/Ubuntu%2024.04%20%7C%20Debian%2012-informational)
 ![license](https://img.shields.io/badge/license-proprietary-9E5C0C)
 
@@ -114,7 +114,7 @@ Two ports matter and they are **not** the same one:
 | **Addressing** | IPv4, IPv6 or dual stack. Tunnel ranges auto-picked to avoid conflicts, or set by hand. | IPv4، IPv6 یا دو-پشته‌ای. محدوده‌های تانل خودکار و بدون تداخل، یا دستی. |
 | **SSH guard** | The relay's SSH port is registered as protected, so a bad port choice cannot lock you out. | پورت SSH رله محافظت‌شده ثبت می‌شود، پس انتخاب اشتباه پورت شما را بیرون قفل نمی‌کند. |
 | **SSH fallback** | A reverse SSH forward that can carry the service when WireGuard will not come up. | فوروارد معکوس SSH که وقتی وایرگارد بالا نمی‌آید می‌تواند سرویس را حمل کند. |
-| **Repair and watchdog** | A repair pass rewrites configs, re-applies firewall rules and restarts services; a timer can run it automatically with a cooldown. | یک پاس تعمیر کانفیگ‌ها را بازنویسی، فایروال را دوباره اعمال و سرویس‌ها را ری‌استارت می‌کند؛ یک تایمر می‌تواند خودکار اجرایش کند. |
+| **Repair and watchdog** | A repair pass rewrites configs, re-applies firewall rules and restarts services; a timer can run it automatically with a cooldown, and can optionally move the tunnel to a new port after repeated failed repairs. | یک پاس تعمیر کانفیگ‌ها را بازنویسی، فایروال را دوباره اعمال و سرویس‌ها را ری‌استارت می‌کند؛ یک تایمر می‌تواند خودکار اجرایش کند و در صورت تمایل بعد از چند تعمیر ناموفق پشت‌سرهم، تانل را به پورت جدید ببرد. |
 | **Offline install** | Builds a bundle to carry to the exit server by hand, for when SSH is not possible. | بسته‌ای می‌سازد که دستی به سرور خروج ببرید، وقتی SSH ممکن نیست. |
 | **Diagnostics** | Handshake age, transfer counters, endpoint, service state and tunnel ping in one screen. | سن handshake، شمارنده‌های انتقال، اندپوینت، وضعیت سرویس و پینگ تانل در یک صفحه. |
 | **Self-update** | Discovers the newest release from this repository and reinstalls in place. | جدیدترین نسخه را از همین مخزن پیدا و در جا نصب می‌کند. |
@@ -175,6 +175,7 @@ Labels are shown exactly as they appear in the terminal.
 | 4 | Disable it | غیرفعال‌کردن آن |
 | 5 | Watchdog status and log path | وضعیت دیده‌بان و مسیر لاگ |
 | 6 | Repair on a new tunnel port. Before anything changes, the port is checked free for TCP and UDP on both servers (listening sockets and DNAT rules) | تعمیر روی پورت تانل جدید. قبل از هر تغییری، آزاد بودن پورت برای TCP و UDP روی هر دو سرور چک می‌شود (سوکت‌های در حال گوش‌دادن و قوانین DNAT) |
+| 7 | Let the watchdog change the tunnel port by itself after N failed repairs in a row (off by default; at most 3 port changes per outage, never back to a port already tried in it) | اجازه به دیده‌بان برای عوض‌کردن خودکار پورت تانل بعد از N تعمیر ناموفق پشت‌سرهم (پیش‌فرض خاموش؛ حداکثر ۳ تغییر پورت در هر قطعی، بدون برگشت به پورتی که در همان قطعی امتحان شده) |
 
 ### `12) SSH fallback`
 

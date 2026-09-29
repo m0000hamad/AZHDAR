@@ -216,12 +216,14 @@ _tunnel_repair_restart_services(){
 }
 
 _tunnel_repair_pick_port(){
-  # usage: _tunnel_repair_pick_port [port]
+  # usage: _tunnel_repair_pick_port [port] [auto]
   # Sets TUNNEL_NEW_PORT to a port that is free for TCP and UDP on IR AND on
   # OUT (see ports_tunnel_port_problems). With a port argument only that port
   # is checked. Without one, a free port is suggested and the user may type
-  # another; without a terminal the suggestion is taken as-is.
-  local want="${1:-}" ldump rdump sug problems
+  # another; with "auto" (watchdog) or without a terminal the suggestion is
+  # taken as-is.
+  local want="${1:-}" ask=0 ldump rdump sug problems
+  [[ -t 0 && "${2:-}" != "auto" ]] && ask=1
   TUNNEL_NEW_PORT=""
   step "Check tunnel port on IR and OUT"
   ports_build_registry
@@ -239,7 +241,7 @@ _tunnel_repair_pick_port(){
   sug="$(ports_tunnel_port_suggest "$ldump" "$rdump" || true)"
   while true; do
     if [[ -z "$want" ]]; then
-      if [[ ! -t 0 ]]; then
+      if (( ask == 0 )); then
         [[ -n "$sug" ]] || { err "No port is free on both IR and OUT near ${WG_PORT}."; return 1; }
         want="$sug"
       else
@@ -262,14 +264,14 @@ _tunnel_repair_pick_port(){
 
     warn "Port ${want} cannot be the tunnel port:"
     sed 's/^/  - /' <<<"$problems"
-    [[ -z "${1:-}" && -t 0 ]] || return 1
+    [[ -z "${1:-}" ]] && (( ask == 1 )) || return 1
     [[ "$(prompt_yesno "Choose another port?" "Y")" == "Y" ]] || return 1
     want=""
   done
 }
 
 _tunnel_repair_change_port(){
-  # usage: _tunnel_repair_change_port [port]
+  # usage: _tunnel_repair_change_port [port] [auto]
   # Pick (or check) a new tunnel port and save it in the profile. The rest of
   # azhdar_repair_tunnel then rebuilds both ends on it: stale rules are removed
   # by profile tag whatever their port, and WG configs, Mimic filters and the
@@ -282,7 +284,7 @@ _tunnel_repair_change_port(){
     err "OUT is not reachable over SSH (as root). The tunnel port must change on IR and OUT together, so it stays ${WG_PORT}."
     return 1
   fi
-  _tunnel_repair_pick_port "${1:-}" || return 1
+  _tunnel_repair_pick_port "${1:-}" "${2:-}" || return 1
 
   local old="${WG_PORT}"
   WG_PORT="${TUNNEL_NEW_PORT}"
@@ -403,7 +405,7 @@ azhdar_repair_tunnel(){
 
   local old_port="${WG_PORT}"
   if (( change_port == 1 )); then
-    _tunnel_repair_change_port "$new_port" || return 1
+    _tunnel_repair_change_port "$new_port" "$mode" || return 1
   fi
 
   step "Repair preflight and SSH guard"
@@ -536,12 +538,15 @@ _tunnel_watchdog_save_state(){
     printf 'LAST_REPAIR_TS=%s\n' "${LAST_REPAIR_TS:-0}"
     printf 'LAST_OK_TS=%s\n' "${LAST_OK_TS:-0}"
     printf 'REPAIR_FAIL_STREAK=%s\n' "${REPAIR_FAIL_STREAK:-0}"
+    printf 'PORT_HOPS=%s\n' "${PORT_HOPS:-0}"
+    printf 'PORTS_TRIED=%s\n' "${PORTS_TRIED:-}"
   } >"$f" 2>/dev/null || true
   chmod 600 "$f" 2>/dev/null || true
 }
 
 _tunnel_watchdog_load_state(){
   FAIL_COUNT="0"; LAST_REPAIR_TS="0"; LAST_OK_TS="0"; REPAIR_FAIL_STREAK="0"
+  PORT_HOPS="0"; PORTS_TRIED=""
   local f; f="$(_tunnel_watchdog_state_file)"
   if [[ -f "$f" ]]; then
     local _opts; _opts="$(set +o)"
@@ -554,6 +559,43 @@ _tunnel_watchdog_load_state(){
   [[ "${LAST_REPAIR_TS:-0}" =~ ^[0-9]+$ ]] || LAST_REPAIR_TS="0"
   [[ "${LAST_OK_TS:-0}" =~ ^[0-9]+$ ]] || LAST_OK_TS="0"
   [[ "${REPAIR_FAIL_STREAK:-0}" =~ ^[0-9]+$ ]] || REPAIR_FAIL_STREAK="0"
+  [[ "${PORT_HOPS:-0}" =~ ^[0-9]+$ ]] || PORT_HOPS="0"
+  [[ "${PORTS_TRIED:-}" =~ ^[0-9,]*$ ]] || PORTS_TRIED=""
+}
+
+_tunnel_watchdog_port_hop_due(){
+  # usage: _tunnel_watchdog_port_hop_due <failed repairs in a row, this one included>
+  # True when the profile allows automatic port changes, enough repairs in a
+  # row have failed, and this outage has not used up its port changes yet.
+  local streak="$1" after="${TUNNEL_AUTO_PORT_HOP_AFTER:-2}" max="${AZHDAR_PORT_HOP_MAX:-3}"
+  [[ "${TUNNEL_AUTO_PORT_HOP:-0}" == "1" ]] || return 1
+  [[ "${WG_MODE:-classic}" != "account" ]] || return 1
+  [[ "$after" =~ ^[0-9]+$ ]] || after=2
+  [[ "$max" =~ ^[0-9]+$ ]] || max=3
+  (( after < 1 )) && after=1
+  (( streak >= after && PORT_HOPS < max ))
+}
+
+_tunnel_watchdog_port_hop(){
+  # Move the tunnel to a port that is free on IR and OUT and has not been
+  # tried in this outage, then repair on it. PORTS_TRIED keeps the watchdog
+  # from bouncing between two blocked ports; it is cleared once the tunnel is
+  # healthy again. A hop only counts when the port really changed (OUT must be
+  # reachable over SSH to check and write the new port on both ends).
+  local from="${WG_PORT}" rc=0
+  ports_csv_contains "${PORTS_TRIED:-}" "$from" || PORTS_TRIED="${PORTS_TRIED:+${PORTS_TRIED},}${from}"
+  _tunnel_repair_log_msg "watchdog moving tunnel off port ${from} (hop $((PORT_HOPS + 1)), tried: ${PORTS_TRIED})"
+  TUNNEL_PORT_EXCLUDE="${PORTS_TRIED}"
+  exec 9>&-   # release the lock of the repair that just failed
+  azhdar_repair_tunnel --auto --yes --new-port || rc=$?
+  unset TUNNEL_PORT_EXCLUDE
+  if [[ "${WG_PORT}" != "$from" ]]; then
+    PORT_HOPS=$((PORT_HOPS + 1))
+    _tunnel_repair_log_msg "watchdog tunnel port ${from} -> ${WG_PORT} (rc=${rc})"
+  else
+    _tunnel_repair_log_msg "watchdog port change not made; tunnel stays on ${from}"
+  fi
+  return "$rc"
 }
 
 _tunnel_watchdog_effective_cooldown(){
@@ -593,6 +635,8 @@ azhdar_tunnel_watchdog(){
   if _tunnel_repair_health_quiet; then
     FAIL_COUNT="0"
     REPAIR_FAIL_STREAK="0"
+    PORT_HOPS="0"
+    PORTS_TRIED=""
     LAST_OK_TS="$now"
     _tunnel_watchdog_save_state
     _tunnel_repair_log_msg "watchdog healthy profile=${PROFILE}"
@@ -615,9 +659,15 @@ azhdar_tunnel_watchdog(){
 
   LAST_REPAIR_TS="$now"
   _tunnel_watchdog_save_state
-  if azhdar_repair_tunnel --auto --yes; then
+  # A failed repair that completes TUNNEL_AUTO_PORT_HOP_AFTER failures in a row
+  # is followed straight away by a repair on a new port (when enabled), and so
+  # is every later failed repair of the same outage, up to AZHDAR_PORT_HOP_MAX.
+  if azhdar_repair_tunnel --auto --yes \
+     || { _tunnel_watchdog_port_hop_due $((REPAIR_FAIL_STREAK + 1)) && _tunnel_watchdog_port_hop; }; then
     FAIL_COUNT="0"
     REPAIR_FAIL_STREAK="0"
+    PORT_HOPS="0"
+    PORTS_TRIED=""
     LAST_OK_TS="$(date +%s 2>/dev/null || echo 0)"
   else
     # Keep a small fail count so the next run can try again after cooldown.
@@ -655,10 +705,47 @@ azhdar_tunnel_watchdog_disable(){
   fi
 }
 
+_tunnel_watchdog_port_hop_label(){
+  if [[ "${TUNNEL_AUTO_PORT_HOP:-0}" == "1" ]]; then
+    echo "on, after ${TUNNEL_AUTO_PORT_HOP_AFTER:-2} failed repairs in a row (max ${AZHDAR_PORT_HOP_MAX:-3} per outage)"
+  else
+    echo "off"
+  fi
+}
+
+azhdar_tunnel_watchdog_port_hop_toggle(){
+  ensure_profile_selected || return 1
+  if [[ "${TUNNEL_AUTO_PORT_HOP:-0}" == "1" ]]; then
+    TUNNEL_AUTO_PORT_HOP="0"
+    profile_save
+    ok "Watchdog will no longer change the tunnel port."
+    return 0
+  fi
+  if [[ "${WG_MODE:-classic}" == "account" ]]; then
+    err "Account-mode profiles take the port from the provider config; the watchdog cannot change it."
+    return 1
+  fi
+  echo -e "${DIM}When a watchdog repair fails this many times in a row, the next step is a repair on a new tunnel port${RST}"
+  echo -e "${DIM}that is free on IR and OUT (checked over SSH first). Clients are not affected; only the port between the servers changes.${RST}"
+  local n=""
+  while true; do
+    read -rp "Failed repairs in a row before a port change [${TUNNEL_AUTO_PORT_HOP_AFTER:-2}]: " n || true
+    n="${n:-${TUNNEL_AUTO_PORT_HOP_AFTER:-2}}"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n >= 1 && n <= 20 )) && break
+    warn "Enter a number from 1 to 20."
+  done
+  TUNNEL_AUTO_PORT_HOP="1"
+  TUNNEL_AUTO_PORT_HOP_AFTER="$n"
+  profile_save
+  ok "Watchdog port change: $(_tunnel_watchdog_port_hop_label)."
+  [[ "${TUNNEL_AUTO_REPAIR:-0}" == "1" ]] || warn "The auto repair watchdog itself is off; enable it with option 3."
+}
+
 azhdar_tunnel_watchdog_status(){
   local f
   f="$(_tunnel_watchdog_state_file)"
   echo -e "${DIM}Auto repair:${RST} ${TUNNEL_AUTO_REPAIR:-0}"
+  echo -e "${DIM}Auto port change:${RST} $(_tunnel_watchdog_port_hop_label)"
   echo -e "${DIM}Timer:${RST} $(systemctl is-enabled azhdar-watchdog.timer 2>/dev/null || echo disabled) / $(systemctl is-active azhdar-watchdog.timer 2>/dev/null || echo inactive)"
   if [[ -f "$f" ]]; then
     echo -e "${DIM}State:${RST} ${f}"
@@ -677,6 +764,7 @@ menu_tunnel_repair(){
     hr
     echo -e "${DIM}Profile:${RST} ${PROFILE}"
     echo -e "${DIM}Auto repair:${RST} ${TUNNEL_AUTO_REPAIR:-0}  ${DIM}fails:${RST} ${TUNNEL_AUTO_REPAIR_FAILS:-2}  ${DIM}cooldown:${RST} ${TUNNEL_AUTO_REPAIR_COOLDOWN:-600}s"
+    echo -e "${DIM}Auto port change:${RST} $(_tunnel_watchdog_port_hop_label)  ${DIM}tunnel port:${RST} ${WG_PORT:-?}"
     hr
     echo " 1) Repair tunnel now (safe/manual)"
     echo " 2) Deep repair now (includes limited tunnel-IP auto-heal)"
@@ -684,6 +772,11 @@ menu_tunnel_repair(){
     echo " 4) Disable auto repair watchdog"
     echo " 5) Watchdog status/log path"
     echo " 6) Repair on a new tunnel port (port checked free on IR and OUT)"
+    if [[ "${TUNNEL_AUTO_PORT_HOP:-0}" == "1" ]]; then
+      echo " 7) Turn off automatic port change by the watchdog"
+    else
+      echo " 7) Let the watchdog change the tunnel port after failed repairs"
+    fi
     echo " 0) Back"
     hr
     read -rp "Select: " c || true
@@ -691,6 +784,7 @@ menu_tunnel_repair(){
       1) azhdar_repair_tunnel --yes || true; pause ;;
       2) azhdar_repair_tunnel --yes --deep || true; pause ;;
       6) azhdar_repair_tunnel --yes --new-port || true; pause ;;
+      7) azhdar_tunnel_watchdog_port_hop_toggle || true; pause ;;
       3) azhdar_tunnel_watchdog_enable || true; pause ;;
       4) azhdar_tunnel_watchdog_disable || true; pause ;;
       5) azhdar_tunnel_watchdog_status || true; pause ;;

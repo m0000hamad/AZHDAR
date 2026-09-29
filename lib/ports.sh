@@ -782,16 +782,19 @@ ports_tunnel_port_problems(){
 ports_tunnel_port_suggest(){
   # usage: ports_tunnel_port_suggest <ir_dump> <out_dump>
   # First port other than the current WG_PORT that is free on IR and OUT: the
-  # usual tunnel candidates first, then outward from the current port.
+  # usual tunnel candidates first, then outward from the current port. Ports
+  # in TUNNEL_PORT_EXCLUDE (CSV; the watchdog's already-tried ports) are skipped.
   local ldump="$1" rdump="$2" base="${WG_PORT:-443}" p d
   [[ "$base" =~ ^[0-9]+$ ]] || base=443
   for p in "${WG_PORT_CANDIDATES[@]}"; do
     [[ "$p" == "${WG_PORT:-}" ]] && continue
+    ports_csv_contains "${TUNNEL_PORT_EXCLUDE:-}" "$p" && continue
     [[ -z "$(ports_tunnel_port_problems "$p" "$ldump" "$rdump")" ]] && { echo "$p"; return 0; }
   done
   for ((d=1; d<=500; d++)); do
     for p in $((base + d)) $((base - d)); do
       (( p >= 1024 && p <= 65000 )) || continue
+      ports_csv_contains "${TUNNEL_PORT_EXCLUDE:-}" "$p" && continue
       [[ -z "$(ports_tunnel_port_problems "$p" "$ldump" "$rdump")" ]] && { echo "$p"; return 0; }
     done
   done

@@ -102,6 +102,8 @@ PROFILE_ENABLED="0"  # 1 when installed/enabled
 TUNNEL_AUTO_REPAIR="0"       # 1 to let azhdar-watchdog repair this profile automatically
 TUNNEL_AUTO_REPAIR_FAILS="2" # failed checks before auto repair
 TUNNEL_AUTO_REPAIR_COOLDOWN="600" # seconds between automatic repairs
+TUNNEL_AUTO_PORT_HOP="0"         # 1 to let the watchdog move the tunnel to a new port after failed repairs
+TUNNEL_AUTO_PORT_HOP_AFTER="2"   # failed automatic repairs in a row before the first port change
 WG_MODE="classic"      # classic | account
 WG_ACCOUNT_CONFIG=""
 WG_ACCOUNT_ENDPOINT=""
@@ -168,6 +170,8 @@ defaults_profile(){
   TUNNEL_AUTO_REPAIR="${TUNNEL_AUTO_REPAIR:-0}"
   TUNNEL_AUTO_REPAIR_FAILS="${TUNNEL_AUTO_REPAIR_FAILS:-2}"
   TUNNEL_AUTO_REPAIR_COOLDOWN="${TUNNEL_AUTO_REPAIR_COOLDOWN:-600}"
+  TUNNEL_AUTO_PORT_HOP="${TUNNEL_AUTO_PORT_HOP:-0}"
+  TUNNEL_AUTO_PORT_HOP_AFTER="${TUNNEL_AUTO_PORT_HOP_AFTER:-2}"
   WG_MODE="${WG_MODE:-classic}"
   WG_ACCOUNT_CONFIG="${WG_ACCOUNT_CONFIG:-}"
   WG_ACCOUNT_ENDPOINT="${WG_ACCOUNT_ENDPOINT:-}"
@@ -229,6 +233,8 @@ profile_load(){
   TUNNEL_AUTO_REPAIR="0"
   TUNNEL_AUTO_REPAIR_FAILS="2"
   TUNNEL_AUTO_REPAIR_COOLDOWN="600"
+  TUNNEL_AUTO_PORT_HOP="0"
+  TUNNEL_AUTO_PORT_HOP_AFTER="2"
   WG_MODE="classic"
   WG_ACCOUNT_CONFIG=""
   WG_ACCOUNT_ENDPOINT=""
@@ -339,6 +345,8 @@ profile_save(){
     printf 'TUNNEL_AUTO_REPAIR=%s\n' "$(q "${TUNNEL_AUTO_REPAIR:-0}")"
     printf 'TUNNEL_AUTO_REPAIR_FAILS=%s\n' "$(q "${TUNNEL_AUTO_REPAIR_FAILS:-2}")"
     printf 'TUNNEL_AUTO_REPAIR_COOLDOWN=%s\n' "$(q "${TUNNEL_AUTO_REPAIR_COOLDOWN:-600}")"
+    printf 'TUNNEL_AUTO_PORT_HOP=%s\n' "$(q "${TUNNEL_AUTO_PORT_HOP:-0}")"
+    printf 'TUNNEL_AUTO_PORT_HOP_AFTER=%s\n' "$(q "${TUNNEL_AUTO_PORT_HOP_AFTER:-2}")"
     printf 'WG_MODE=%s\n' "$(q "${WG_MODE:-classic}")"
     printf 'WG_ACCOUNT_CONFIG=%s\n' "$(q "${WG_ACCOUNT_CONFIG:-}")"
     printf 'WG_ACCOUNT_ENDPOINT=%s\n' "$(q "${WG_ACCOUNT_ENDPOINT:-}")"

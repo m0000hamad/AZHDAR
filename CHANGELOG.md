@@ -3,6 +3,31 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.36: the watchdog can move the tunnel to a new port
+
+v3.2.35 added repair on a new tunnel port, but only by hand. The watchdog
+could still only retry the same port with a growing cooldown, so a port
+filtered on the path stayed down until someone logged in.
+
+- New option `14) Repair tunnel` → `7`: let the watchdog change the tunnel
+  port by itself. It is off by default and asks how many failed repairs in a
+  row come first (`TUNNEL_AUTO_PORT_HOP_AFTER`, default 2). Saved per profile
+  as `TUNNEL_AUTO_PORT_HOP` / `TUNNEL_AUTO_PORT_HOP_AFTER`.
+- When a watchdog repair fails and that makes N failures in a row, the same
+  run goes straight on to a repair on a new port, with the same checks as the
+  manual one: free for TCP and UDP on IR and OUT, OUT reachable over SSH, and
+  a revert if OUT does not confirm the new `ListenPort`. Every later failed
+  repair in the same outage moves the port again, up to 3 changes
+  (`AZHDAR_PORT_HOP_MAX`).
+- Ports already tried in the outage are skipped (`PORTS_TRIED` in the
+  watchdog state), so it never bounces between two blocked ports. The list
+  and the change count reset once the tunnel is healthy again. A change only
+  counts when the port really changed; if OUT cannot be reached over SSH the
+  tunnel stays where it is.
+- In automatic mode the port picker never prompts, even when
+  `azhdar --watchdog` is run from a terminal.
+- The repair menu header and `Watchdog status` show the setting.
+
 ## AZHDAR v3.2.35: repair on a new tunnel port, no more ssh-keyscan bans
 
 ### Repair can move the tunnel to a new port
