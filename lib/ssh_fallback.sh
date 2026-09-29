@@ -656,9 +656,19 @@ ssh_fallback_write_service_local(){
     gopt="-g"
   fi
 
-  local kh_dir kh_target
+  local kh_dir kh_target kh_marker scan_ttl scan_skip=""
   kh_dir="$(dirname "$kh")"
   kh_target="$(ssh_known_host_target_for "$host" "$port")"
+  # Same once-per-TTL rule as ssh_prepare_known_hosts_for(), sharing its
+  # marker. Restart=always re-runs ExecStartPre every RestartSec, and a scan
+  # per restart feeds OUT's PerSourcePenalties (OpenSSH >= 9.8) until the
+  # tunnel itself is refused. find -mmin instead of date +%s: systemd would
+  # read the % as a unit specifier.
+  kh_marker="$(ssh_known_hosts_scan_marker "$kh")"
+  scan_ttl="$(ssh_known_hosts_scan_ttl)"
+  if (( scan_ttl > 0 )); then
+    scan_skip="if [ -f ${kh} ] && [ -n \"\$(find ${kh_marker} -mmin -$(( (scan_ttl + 59) / 60 )) 2>/dev/null)\" ]; then exit 0; fi; "
+  fi
 
   local exec
   if (( use_pw == 1 )); then
@@ -679,7 +689,7 @@ Wants=network-online.target
 Type=simple
 ${envline}
 ExecStartPre=/bin/mkdir -p ${kh_dir}
-ExecStartPre=/bin/bash -lc 'tmp=\$(mktemp 2>/dev/null || echo /tmp/azhdar-kh-\$\$); if command -v ssh-keyscan >/dev/null 2>&1 && ssh-keyscan -T 5 -p ${port} ${host} >"\$tmp" 2>/dev/null && [ -s "\$tmp" ]; then touch ${kh}; chmod 600 ${kh}; if command -v ssh-keygen >/dev/null 2>&1; then ssh-keygen -R "${kh_target}" -f ${kh} >/dev/null 2>&1 || true; ssh-keygen -R "${host}" -f ${kh} >/dev/null 2>&1 || true; else : >${kh}; fi; cat "\$tmp" >>${kh}; chmod 600 ${kh}; fi; rm -f "\$tmp" >/dev/null 2>&1 || true'
+ExecStartPre=/bin/bash -lc '${scan_skip}tmp=\$(mktemp 2>/dev/null || echo /tmp/azhdar-kh-\$\$); if command -v ssh-keyscan >/dev/null 2>&1 && ssh-keyscan -T 5 -p ${port} ${host} >"\$tmp" 2>/dev/null && [ -s "\$tmp" ]; then touch ${kh}; chmod 600 ${kh}; if command -v ssh-keygen >/dev/null 2>&1; then ssh-keygen -R "${kh_target}" -f ${kh} >/dev/null 2>&1 || true; ssh-keygen -R "${host}" -f ${kh} >/dev/null 2>&1 || true; else : >${kh}; fi; cat "\$tmp" >>${kh}; chmod 600 ${kh}; fi; touch ${kh_marker} >/dev/null 2>&1; rm -f "\$tmp" >/dev/null 2>&1 || true'
 ExecStart=${exec} \
   -o "ServerAliveInterval 20" -o "ServerAliveCountMax 3" \
   -o "ExitOnForwardFailure yes" \

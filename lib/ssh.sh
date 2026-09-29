@@ -121,6 +121,8 @@ ssh_forget_known_host_for(){
   mkdir -p "$(dirname "$kh")" >/dev/null 2>&1 || true
   touch "$kh" >/dev/null 2>&1 || true
   chmod 600 "$kh" >/dev/null 2>&1 || true
+  # Force the next ssh_prepare_known_hosts_for() to scan again.
+  rm -f "$(ssh_known_hosts_scan_marker "$kh")" >/dev/null 2>&1 || true
   target="$(ssh_known_host_target_for "$host" "$port")"
   if have_cmd ssh-keygen; then
     ssh-keygen -R "$target" -f "$kh" >/dev/null 2>&1 || true
@@ -143,6 +145,35 @@ ssh_forget_known_host_for(){
   fi
 }
 
+ssh_known_hosts_scan_marker(){
+  # usage: ssh_known_hosts_scan_marker <known_hosts file>
+  # The marker's mtime is the time of the last ssh-keyscan for that endpoint.
+  printf '%s.scanned' "$1"
+}
+
+ssh_known_hosts_scan_ttl(){
+  # Seconds a scan stays fresh (AZHDAR_KEYSCAN_TTL, default 600, 0 = always scan).
+  local ttl="${AZHDAR_KEYSCAN_TTL:-600}"
+  [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=600
+  printf '%s' "$ttl"
+}
+
+ssh_known_hosts_scan_fresh(){
+  # usage: ssh_known_hosts_scan_fresh <known_hosts file>
+  # True when the endpoint behind this known_hosts file was scanned within the
+  # TTL. The state lives in a file, not a variable: most callers run inside
+  # $(...) subshells, where an in-memory cache is lost after every call.
+  local kh="$1" m ttl mt now
+  ttl="$(ssh_known_hosts_scan_ttl)"
+  (( ttl > 0 )) || return 1
+  m="$(ssh_known_hosts_scan_marker "$kh")"
+  [[ -f "$kh" && -f "$m" ]] || return 1
+  mt="$(stat -c %Y "$m" 2>/dev/null)" || return 1
+  [[ "$mt" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  (( now >= mt && now - mt < ttl ))
+}
+
 ssh_prepare_known_hosts_for(){
   # Refresh and save the current SSH host key before connecting.
   # This prevents 'REMOTE HOST IDENTIFICATION HAS CHANGED' after VPS rebuilds,
@@ -153,6 +184,18 @@ ssh_prepare_known_hosts_for(){
   [[ -n "$host" ]] || return 0
   is_port "$port" || port="22"
   [[ -n "$kh" ]] || kh="$(ssh_known_hosts_file_for "$host" "$port")"
+
+  # Scan each endpoint at most once per TTL. Every ssh-keyscan connection
+  # closes without authenticating, and OpenSSH >= 9.8 (PerSourcePenalties, on
+  # by default since Debian 13 / Ubuntu 24.10) counts each one as a noauth
+  # penalty: a scan before every ssh call got IR refused by OUT after about
+  # three calls. A key that rotates inside the TTL still gets picked up:
+  # ssh_forget_known_host_for() drops the marker, and the rc==255 retry in
+  # ssh_exec_cmd_on / ssh_exec_stdin_on forgets and then calls us again.
+  if ssh_known_hosts_scan_fresh "$kh"; then
+    return 0
+  fi
+
   mkdir -p "$(dirname "$kh")" >/dev/null 2>&1 || true
   touch "$kh" >/dev/null 2>&1 || true
   chmod 600 "$kh" >/dev/null 2>&1 || true
@@ -169,6 +212,10 @@ ssh_prepare_known_hosts_for(){
     chmod 600 "$kh" >/dev/null 2>&1 || true
   fi
   rm -f "$tmp" >/dev/null 2>&1 || true
+  # Mark the attempt even when the scan failed: the endpoint was cleared from
+  # known_hosts above, so ssh's accept-new records the key on first connect,
+  # and rescanning a server that already penalises us only extends the block.
+  touch "$(ssh_known_hosts_scan_marker "$kh")" >/dev/null 2>&1 || true
 }
 
 ssh_prepare_known_hosts(){

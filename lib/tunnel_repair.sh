@@ -215,6 +215,92 @@ _tunnel_repair_restart_services(){
   restart_services_local || true
 }
 
+_tunnel_repair_pick_port(){
+  # usage: _tunnel_repair_pick_port [port]
+  # Sets TUNNEL_NEW_PORT to a port that is free for TCP and UDP on IR AND on
+  # OUT (see ports_tunnel_port_problems). With a port argument only that port
+  # is checked. Without one, a free port is suggested and the user may type
+  # another; without a terminal the suggestion is taken as-is.
+  local want="${1:-}" ldump rdump sug problems
+  TUNNEL_NEW_PORT=""
+  step "Check tunnel port on IR and OUT"
+  ports_build_registry
+  ldump="$(ports_tunnel_dump_local)"
+  rdump="$(ports_tunnel_dump_remote)"
+  if ! grep -qx "SS_OK" <<<"$ldump"; then
+    err "Could not list the ports in use on IR (is 'ss' installed?)."
+    return 1
+  fi
+  if ! grep -qx "SS_OK" <<<"$rdump"; then
+    err "Could not list the ports in use on OUT over SSH. The new port must be checked on both servers, so the tunnel port stays ${WG_PORT}."
+    return 1
+  fi
+
+  sug="$(ports_tunnel_port_suggest "$ldump" "$rdump" || true)"
+  while true; do
+    if [[ -z "$want" ]]; then
+      if [[ ! -t 0 ]]; then
+        [[ -n "$sug" ]] || { err "No port is free on both IR and OUT near ${WG_PORT}."; return 1; }
+        want="$sug"
+      else
+        echo -e "${DIM}Current tunnel port:${RST} ${WG_PORT}"
+        [[ -n "$sug" ]] && echo -e "${DIM}Free on IR and OUT:${RST} ${sug}"
+        want="$(prompt_port "New tunnel port" "${sug}")"
+      fi
+    fi
+
+    if [[ "$want" == "${WG_PORT}" ]]; then
+      problems="already the tunnel port of this profile"
+    else
+      problems="$(ports_tunnel_port_problems "$want" "$ldump" "$rdump")"
+    fi
+    if [[ -z "$problems" ]]; then
+      ok "Port ${want} is free on IR and OUT (TCP and UDP)."
+      TUNNEL_NEW_PORT="$want"
+      return 0
+    fi
+
+    warn "Port ${want} cannot be the tunnel port:"
+    sed 's/^/  - /' <<<"$problems"
+    [[ -z "${1:-}" && -t 0 ]] || return 1
+    [[ "$(prompt_yesno "Choose another port?" "Y")" == "Y" ]] || return 1
+    want=""
+  done
+}
+
+_tunnel_repair_change_port(){
+  # usage: _tunnel_repair_change_port [port]
+  # Pick (or check) a new tunnel port and save it in the profile. The rest of
+  # azhdar_repair_tunnel then rebuilds both ends on it: stale rules are removed
+  # by profile tag whatever their port, and WG configs, Mimic filters and the
+  # firewall are all written from the saved WG_PORT.
+  if [[ "${WG_MODE:-classic}" == "account" ]]; then
+    err "Account-mode profiles take the port from the provider config; it cannot be changed here."
+    return 1
+  fi
+  if ! ensure_remote_sudo >/dev/null 2>&1; then
+    err "OUT is not reachable over SSH (as root). The tunnel port must change on IR and OUT together, so it stays ${WG_PORT}."
+    return 1
+  fi
+  _tunnel_repair_pick_port "${1:-}" || return 1
+
+  local old="${WG_PORT}"
+  WG_PORT="${TUNNEL_NEW_PORT}"
+  if ! profile_save >/dev/null 2>&1; then
+    WG_PORT="$old"
+    err "Profile save failed; the tunnel port stays ${old}."
+    return 1
+  fi
+  _tunnel_repair_log_msg "tunnel port ${old} -> ${WG_PORT}"
+  ok "Tunnel port ${old} -> ${WG_PORT} saved; both servers are rebuilt on it below."
+}
+
+_tunnel_repair_remote_listen_port(){
+  # ListenPort in OUT's WG config for this profile (empty when unreadable).
+  ssh_run "${REMOTE_SUDO:-} grep -E '^[[:space:]]*ListenPort[[:space:]]*=' /etc/wireguard/${WG_IF}.conf 2>/dev/null | tail -n1" 2>/dev/null \
+    | tr -d '\r' | tail -n1 | tr -dc '0-9' || true
+}
+
 _tunnel_repair_wait_connected(){
   local i max="${1:-5}" delay="${2:-5}"
   for ((i=1;i<=max;i++)); do
@@ -268,12 +354,14 @@ azhdar_repair_tunnel(){
   need_root
   ensure_dirs
 
-  local mode="manual" assume_yes="0" deep="0" arg
+  local mode="manual" assume_yes="0" deep="0" change_port="0" new_port="" arg
   for arg in "$@"; do
     case "$arg" in
       --auto|--watchdog) mode="auto"; assume_yes="1" ;;
       --yes|-y) assume_yes="1" ;;
       --deep) deep="1" ;;
+      --new-port) change_port="1" ;;
+      --new-port=*) change_port="1"; new_port="${arg#--new-port=}" ;;
     esac
   done
 
@@ -302,16 +390,21 @@ azhdar_repair_tunnel(){
     fi
   fi
 
-  _tunnel_repair_log_msg "start mode=${mode} profile=${PROFILE}"
+  _tunnel_repair_log_msg "start mode=${mode} profile=${PROFILE}${new_port:+ new_port=${new_port}}"
   _tunnel_repair_validate_profile || return 1
 
-  if _tunnel_repair_health_quiet; then
+  if (( change_port == 0 )) && _tunnel_repair_health_quiet; then
     _tunnel_repair_log_msg "already healthy"
     [[ "$mode" == "manual" ]] && ok "Tunnel already looks healthy. Repair not needed."
     return 0
   fi
 
   _tunnel_repair_snapshot || true
+
+  local old_port="${WG_PORT}"
+  if (( change_port == 1 )); then
+    _tunnel_repair_change_port "$new_port" || return 1
+  fi
 
   step "Repair preflight and SSH guard"
   azhdar_firewall_safety_local || true
@@ -332,6 +425,22 @@ azhdar_repair_tunnel(){
   # cut the only path to OUT and make repair impossible without rebuild.
   step "Rebuild WireGuard/Mimic configs from profile"
   _tunnel_repair_write_configs || true
+  if (( change_port == 1 )); then
+    # Both ends must use the same port. If OUT did not take the new one (SSH
+    # dropped mid-write), go back to the old port rather than leave IR alone
+    # on a port OUT does not listen on.
+    local out_port; out_port="$(_tunnel_repair_remote_listen_port)"
+    if [[ "$out_port" == "$WG_PORT" ]]; then
+      ok "OUT config confirms ListenPort=${WG_PORT}."
+    else
+      warn "OUT config shows ListenPort=${out_port:-unknown}, expected ${WG_PORT}; going back to port ${old_port}."
+      WG_PORT="$old_port"
+      profile_save >/dev/null 2>&1 || true
+      _tunnel_repair_log_msg "tunnel port change reverted to ${old_port} (OUT showed ${out_port:-unknown})"
+      _tunnel_repair_write_configs || true
+      change_port=0
+    fi
+  fi
   ok "Configs rebuilt (best-effort)."
 
   step "Stop local WG/Mimic runtime"
@@ -393,7 +502,23 @@ azhdar_repair_tunnel(){
 
   _tunnel_repair_log_msg "failed"
   err "Tunnel repair finished but tunnel is still disconnected."
-  azhdar_port_filter_probe || true
+  local port_blocked=0
+  azhdar_port_filter_probe && port_blocked=1 || true
+  if [[ "$mode" == "manual" && -t 0 && "${WG_MODE:-classic}" != "account" ]] && (( change_port == 0 )) && _tunnel_repair_remote_available; then
+    echo
+    local def="N"
+    (( port_blocked == 1 )) && def="Y"
+    if [[ "$(prompt_yesno "Move the tunnel to another port (checked free on IR and OUT) and repair again?" "$def")" == "Y" ]]; then
+      # Release the repair lock; the nested run takes it again.
+      exec 9>&-
+      if [[ "$deep" == "1" ]]; then
+        azhdar_repair_tunnel --yes --deep --new-port
+      else
+        azhdar_repair_tunnel --yes --new-port
+      fi
+      return $?
+    fi
+  fi
   echo -e "${DIM}Log:${RST} $(_tunnel_repair_log)"
   [[ "$mode" == "manual" ]] && { echo; diagnostics_full || true; }
   return 1
@@ -558,12 +683,14 @@ menu_tunnel_repair(){
     echo " 3) Enable auto repair watchdog"
     echo " 4) Disable auto repair watchdog"
     echo " 5) Watchdog status/log path"
+    echo " 6) Repair on a new tunnel port (port checked free on IR and OUT)"
     echo " 0) Back"
     hr
     read -rp "Select: " c || true
     case "${c:-}" in
       1) azhdar_repair_tunnel --yes || true; pause ;;
       2) azhdar_repair_tunnel --yes --deep || true; pause ;;
+      6) azhdar_repair_tunnel --yes --new-port || true; pause ;;
       3) azhdar_tunnel_watchdog_enable || true; pause ;;
       4) azhdar_tunnel_watchdog_disable || true; pause ;;
       5) azhdar_tunnel_watchdog_status || true; pause ;;

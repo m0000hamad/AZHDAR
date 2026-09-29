@@ -684,3 +684,116 @@ suggest_wg_port(){
   return 1
 }
 
+
+# -------------------- Tunnel port: free on BOTH servers --------------------
+# WG_PORT is the UDP port WireGuard listens on at both ends and the fake-TCP
+# port Mimic uses, so a new one must be unused for TCP and UDP on IR AND on
+# OUT. A port can be taken without a listening socket too: a DNAT/REDIRECT
+# rule in nat PREROUTING takes the packets before WireGuard sees them. Each
+# side is listed once (one SSH round trip for OUT) and every candidate is then
+# checked against those lists, instead of one SSH call per candidate port.
+
+_ports_tunnel_probe_script(){
+  # Script run on IR (bash) and on OUT (as root over SSH). Output lines:
+  #   L <tcp|udp> <port> <process|->   listening socket
+  #   N <tcp|udp|all> <lo> <hi>        nat PREROUTING rule matching those dports
+  #   SS_OK                            the socket list above is complete
+  cat <<'PROBE'
+set +e
+if command -v ss >/dev/null 2>&1 && s="$(ss -lntup 2>/dev/null)"; then
+  printf '%s\n' "$s" | awk 'NR > 1 {
+    n = split($5, a, ":"); port = a[n]
+    if (port !~ /^[0-9]+$/) next
+    proc = "-"
+    if (match($0, /users:\(\("[^"]+"/)) proc = substr($0, RSTART + 9, RLENGTH - 10)
+    print "L", $1, port, proc
+  }'
+  echo "SS_OK"
+fi
+if command -v iptables >/dev/null 2>&1; then
+  iptables -t nat -S PREROUTING 2>/dev/null | awk '{
+    proto = "all"; list = ""
+    for (i = 1; i < NF; i++) {
+      if ($i == "-p") proto = $(i + 1)
+      if ($i == "--dport" || $i == "--dports") list = $(i + 1)
+    }
+    if (list == "") next
+    n = split(list, items, ",")
+    for (j = 1; j <= n; j++) {
+      if (split(items[j], r, ":") == 2) print "N", proto, r[1], r[2]
+      else print "N", proto, items[j], items[j]
+    }
+  }'
+fi
+PROBE
+}
+
+ports_tunnel_dump_local(){
+  bash -c "$(_ports_tunnel_probe_script)" 2>/dev/null || true
+}
+
+ports_tunnel_dump_remote(){
+  # Needs root on OUT for iptables and process names; call ensure_remote_sudo
+  # in the calling shell first so it is not re-detected inside $(...).
+  _ports_tunnel_probe_script | ssh_run_stdin_env_root_best_effort "AZHDAR_PORT_PROBE=1" 2>/dev/null | tr -d '\r' || true
+}
+
+_ports_tunnel_port_users(){
+  # usage: _ports_tunnel_port_users <port> <dump>
+  # What occupies <port> according to a probe dump; nothing when it is free.
+  awk -v p="$1" '
+    $1 == "L" && $3 == p { print $2 " listener (" $4 ")" }
+    $1 == "N" && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ && p + 0 >= $3 + 0 && p + 0 <= $4 + 0 {
+      print "nat PREROUTING rule for " $2 " " ($3 == $4 ? $3 : $3 "-" $4)
+    }
+  ' <<<"$2" | sort -u
+}
+
+ports_tunnel_port_problems(){
+  # usage: ports_tunnel_port_problems <port> <ir_dump> <out_dump>
+  # Prints one reason per line why <port> cannot be this profile's tunnel port,
+  # nothing when it is free on IR and OUT. Call ports_build_registry first.
+  local p="$1" ldump="$2" rdump="$3" proto line key
+  if ! [[ "$p" =~ ^[0-9]{1,5}$ ]] || (( p < 1 || p > 65535 )); then
+    echo "not a valid port"
+    return 0
+  fi
+  [[ "$p" == "${IR_SSH_PORT:-22}" ]] && echo "IR SSH port"
+  [[ "$p" == "${OUT_SSH_PORT:-22}" ]] && echo "OUT SSH port"
+  ports_csv_contains "${FORWARD_TCP_PORTS:-}" "$p" && echo "public TCP forward port of this profile"
+  ports_csv_contains "${FORWARD_UDP_PORTS:-}" "$p" && echo "public UDP forward port of this profile"
+  for proto in tcp udp; do
+    if [[ -n "${PORT_REG_PROFILE[${proto}:${p}]:-}" ]]; then
+      echo "reserved by profile '${PORT_REG_PROFILE[${proto}:${p}]}' (${PORT_REG_KIND[${proto}:${p}]})"
+      break
+    fi
+  done
+  key="${OUT_SSH_HOST:-}|tcp:${p}"
+  [[ -n "${PORT_REG_PROFILE_REMOTE[$key]:-}" ]] && echo "OUT: reverse SSH fallback port of profile '${PORT_REG_PROFILE_REMOTE[$key]}'"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && echo "IR: ${line}"
+  done < <(_ports_tunnel_port_users "$p" "$ldump")
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && echo "OUT: ${line}"
+  done < <(_ports_tunnel_port_users "$p" "$rdump")
+  return 0
+}
+
+ports_tunnel_port_suggest(){
+  # usage: ports_tunnel_port_suggest <ir_dump> <out_dump>
+  # First port other than the current WG_PORT that is free on IR and OUT: the
+  # usual tunnel candidates first, then outward from the current port.
+  local ldump="$1" rdump="$2" base="${WG_PORT:-443}" p d
+  [[ "$base" =~ ^[0-9]+$ ]] || base=443
+  for p in "${WG_PORT_CANDIDATES[@]}"; do
+    [[ "$p" == "${WG_PORT:-}" ]] && continue
+    [[ -z "$(ports_tunnel_port_problems "$p" "$ldump" "$rdump")" ]] && { echo "$p"; return 0; }
+  done
+  for ((d=1; d<=500; d++)); do
+    for p in $((base + d)) $((base - d)); do
+      (( p >= 1024 && p <= 65000 )) || continue
+      [[ -z "$(ports_tunnel_port_problems "$p" "$ldump" "$rdump")" ]] && { echo "$p"; return 0; }
+    done
+  done
+  return 1
+}

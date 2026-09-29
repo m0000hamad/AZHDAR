@@ -80,6 +80,9 @@ Usage:
   azhdar                 Run interactive menu
   azhdar --boot          Safe local apply at boot (for systemd)
   azhdar --repair-tunnel Manual tunnel repair for active profile
+  azhdar --repair-tunnel --new-port[=N]
+                         Move the tunnel to port N (default: a suggested port
+                         free on IR and OUT), then repair
   azhdar --smart-wizard  Run Smart Wizard / one-step install
   azhdar --watchdog      Auto-check tunnel and repair if enabled
   azhdar --monitor       Live monitor (clients, uptime, traffic)

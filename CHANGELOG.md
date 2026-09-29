@@ -3,6 +3,70 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.35: repair on a new tunnel port, no more ssh-keyscan bans
+
+### Repair can move the tunnel to a new port
+
+When the tunnel port is filtered on the path between the two servers, the
+repair loop could only report it (`azhdar_port_filter_probe`) and the port had
+to be changed separately under Advanced settings. That change only checked
+other AZHDAR profiles, not whether the port was actually free on either server.
+
+- Menu `14) Repair tunnel` has a new entry `6) Repair on a new tunnel port`,
+  also available as `azhdar --repair-tunnel --new-port[=N]`. A failed manual
+  repair now offers the same thing at the end, defaulting to yes when the
+  port-filter probe saw one-way traffic.
+- Before anything changes, the port is checked on IR and on OUT for TCP and
+  UDP: listening sockets (`ss -lntup`, with the owning process in the
+  message) and `nat PREROUTING` rules whose `--dport`/`--dports` match,
+  including multiport lists and ranges. It also refuses the IR and OUT SSH
+  ports, this profile's forward ports, ports other profiles reserve, and
+  reverse SSH fallback ports on the same OUT host. Each server is listed once
+  and every candidate is checked against that list, instead of one SSH call
+  per candidate port. The suggested port is the first free one from the
+  usual tunnel candidates, then outward from the current port.
+- If OUT cannot be listed over SSH as root, nothing changes: the port has to
+  move on both ends together.
+- The new port is saved and both ends are rebuilt by the normal repair steps
+  (stale rules are removed by profile tag, so the old port's rules go too).
+  After the configs are written, OUT's WireGuard config must show the new
+  `ListenPort`; if it does not (for example SSH dropped mid-write), the
+  profile goes back to the old port so IR and OUT never disagree.
+- Without a terminal, `--new-port` takes the suggested port as-is.
+
+### ssh-keyscan no longer gets IR banned by newer OUT servers
+
+`ssh_prepare_known_hosts_for` ran `ssh-keyscan` before every SSH call to OUT
+(`ssh_exec_cmd_on`, `ssh_exec_stdin_on`, `ssh_autodetect_port`, the SSH
+fallback setup, and again in the rc==255 retry). A scan opens one connection
+per host key type, about five, and each closes without authenticating.
+OpenSSH 9.8 and newer (Debian 13, Ubuntu 24.10+) enable `PerSourcePenalties`
+by default and count every such connection as a `noauth` penalty, so after
+about three AZHDAR calls OUT refused IR's address outright. Measured against
+a stock OpenSSH 10.2 sshd with `PerSourcePenalties yes`: calls 1-3 of
+`ssh_run "echo ok"` succeeded and calls 4-8 failed with "Connection reset".
+OUT servers on OpenSSH 9.6 (Ubuntu 24.04) were not affected.
+
+- Each endpoint is now scanned at most once per 10 minutes. A marker file
+  next to its known_hosts file (`<file>.scanned`) records the last scan; a
+  file rather than a variable because most callers run inside `$(...)`
+  subshells. The same run now gives 8 of 8. `AZHDAR_KEYSCAN_TTL` (seconds,
+  default 600, 0 = scan every time) overrides the window.
+- The marker is written even when the scan fails: the endpoint was already
+  cleared from known_hosts, so ssh's `accept-new` records the key on first
+  connect, and rescanning a server that is penalising us only extends the
+  block.
+- A host key that changes inside the window is still picked up.
+  `ssh_forget_known_host_for` deletes the marker, so the rc==255 retry
+  forgets, rescans and reconnects. Tested by regenerating the test sshd's
+  host key while the marker was fresh: the next `ssh_run` succeeded and
+  known_hosts held the new key.
+- The SSH fallback unit's `ExecStartPre` keyscan uses the same marker.
+  With `Restart=always` and `RestartSec=3`, a failing tunnel re-ran the scan
+  every 3 seconds, which can keep OUT's penalty running so the tunnel never
+  gets back in. Existing units keep the old line until the fallback service
+  is written again (SSH fallback menu or install wizard).
+
 ## AZHDAR v3.2.34: one shared SSH key for every exit server
 
 Until now each profile could point at its own identity file, and everything

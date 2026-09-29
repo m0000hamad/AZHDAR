@@ -6,7 +6,7 @@
 
 **تانل وایرگاردی که به‌شکل TCP سفر می‌کند**
 
-![version](https://img.shields.io/badge/version-3.2.34-0E7A88)
+![version](https://img.shields.io/badge/version-3.2.35-0E7A88)
 ![platform](https://img.shields.io/badge/Ubuntu%2024.04%20%7C%20Debian%2012-informational)
 ![license](https://img.shields.io/badge/license-proprietary-9E5C0C)
 
@@ -141,7 +141,7 @@ Labels are shown exactly as they appear in the terminal.
 | **11** | `Cleanup / Uninstall` | Removes this profile's runtime and rules, or uninstalls AZHDAR entirely. | زمان اجرا و رول‌های این پروفایل را حذف می‌کند، یا کل اژدر را پاک می‌کند. |
 | **12** | `SSH fallback (reverse tunnel)` | Configure, start, stop and inspect the reverse SSH forward. | پیکربندی، شروع، توقف و بررسی فوروارد معکوس SSH. |
 | **13** | `Update AZHDAR` | Shows the current and newest version, and installs it. | نسخه فعلی و جدیدترین نسخه را نشان می‌دهد و نصب می‌کند. |
-| **14** | `Repair tunnel / auto watchdog` | Manual repair, deep repair with tunnel-IP auto-heal, and the watchdog controls. | تعمیر دستی، تعمیر عمیق با خوددرمانی آدرس تانل، و کنترل‌های دیده‌بان. |
+| **14** | `Repair tunnel / auto watchdog` | Manual repair, deep repair with tunnel-IP auto-heal, repair on a new tunnel port, and the watchdog controls. | تعمیر دستی، تعمیر عمیق با خوددرمانی آدرس تانل، تعمیر روی پورت تانل جدید، و کنترل‌های دیده‌بان. |
 | **15** | `Emergency IR recovery` | Clears the relay's runtime state without rebuilding the profile and without touching sshd. | وضعیت زمان اجرای رله را بدون بازسازی پروفایل و بدون دست‌زدن به sshd پاک می‌کند. |
 | **16** | `Live monitor (clients / uptime / traffic)` | Refreshing dashboard: connections and distinct client IPs, uptime and restart counts, traffic rates and totals. Read-only. | داشبورد زنده: اتصال‌ها و IPهای یکتای کلاینت، آپتایم و تعداد ری‌استارت، نرخ و مجموع ترافیک. فقط خواندنی. |
 | **17** | `SSH key` | One private key for every exit server. Servers that have its public key log in without a password; the saved password stays as fallback. | یک کلید خصوصی برای همه سرورهای خروج. سرورهایی که کلید عمومی‌اش را دارند بدون پسورد وصل می‌شوند؛ پسورد ذخیره‌شده پشتیبان می‌ماند. |
@@ -174,6 +174,7 @@ Labels are shown exactly as they appear in the terminal.
 | 3 | Enable the auto repair watchdog | فعال‌کردن دیده‌بان تعمیر خودکار |
 | 4 | Disable it | غیرفعال‌کردن آن |
 | 5 | Watchdog status and log path | وضعیت دیده‌بان و مسیر لاگ |
+| 6 | Repair on a new tunnel port. Before anything changes, the port is checked free for TCP and UDP on both servers (listening sockets and DNAT rules) | تعمیر روی پورت تانل جدید. قبل از هر تغییری، آزاد بودن پورت برای TCP و UDP روی هر دو سرور چک می‌شود (سوکت‌های در حال گوش‌دادن و قوانین DNAT) |
 
 ### `12) SSH fallback`
 
@@ -228,7 +229,7 @@ Read the counters in `Diagnostics` before changing anything.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `sent > 0, received 0`, no handshake ever | Packets leave and nothing returns. If the exit server still answers on its SSH port, the tunnel port is **blocked on the path**, not misconfigured.<br><br>بسته‌ها می‌روند و چیزی برنمی‌گردد. اگر سرور خروج روی پورت SSH جواب می‌دهد، پورت تانل روی مسیر بسته است، نه کانفیگ خراب. | Repair cannot fix this and will loop. Change the tunnel port: `10` → `3`. Client configs are unaffected.<br><br>تعمیر این را درست نمی‌کند. پورت تانل را عوض کنید: `10` ← `3`. کانفیگ کلاینت‌ها دست‌نخورده می‌ماند. |
+| `sent > 0, received 0`, no handshake ever | Packets leave and nothing returns. If the exit server still answers on its SSH port, the tunnel port is **blocked on the path**, not misconfigured.<br><br>بسته‌ها می‌روند و چیزی برنمی‌گردد. اگر سرور خروج روی پورت SSH جواب می‌دهد، پورت تانل روی مسیر بسته است، نه کانفیگ خراب. | Plain repair cannot fix this. Move the tunnel to another port: `14` → `6`, or accept the offer at the end of a failed manual repair. Client configs are unaffected.<br><br>تعمیر معمولی این را درست نمی‌کند. تانل را به پورت دیگری ببرید: `14` ← `6`، یا پیشنهاد آخر تعمیر دستیِ ناموفق را قبول کنید. کانفیگ کلاینت‌ها دست‌نخورده می‌ماند. |
 | Handshake ok, tunnel ping fails | The tunnel is up but the path inside it is broken, usually MTU or forwarding.<br><br>تانل بالاست ولی مسیر داخلش خراب است، معمولاً MTU یا فورواردینگ. | Auto MTU: `10` → `4` → `1`. Then re-apply forwarding: `9` → `1`.<br><br>MTU خودکار: `10` ← `4` ← `1`. بعد فورواردینگ: `9` ← `1`. |
 | Tunnel healthy, clients still fail | The forwarding destination does not match where the node actually listens.<br><br>مقصد فورواردینگ با جایی که نود واقعاً گوش می‌دهد یکی نیست. | Check the node's real port on the exit server, then set it: `10` → `8` → `4`.<br><br>پورت واقعی نود را ببینید، بعد تنظیم کنید: `10` ← `8` ← `4`. |
 | `failed to send: Operation not permitted` | Expected noise. Mimic tried to send a reset and the deliberate raw-table rule dropped it. A symptom, not the cause.<br><br>نویز عادی. میمیک خواسته RST بفرستد و قانون عمدی جدول raw آن را انداخته. معلول است نه علت. | Ignore it; read the transfer counters instead.<br><br>نادیده بگیرید؛ به‌جایش شمارنده‌های انتقال را بخوانید. |
@@ -242,6 +243,7 @@ Read the counters in `Diagnostics` before changing anything.
 azhdar                  # interactive menu
 azhdar --smart-wizard   # one-step install, asks only ports
 azhdar --repair-tunnel  # manual repair for the active profile
+azhdar --repair-tunnel --new-port[=N]  # move the tunnel to a port free on both servers, then repair
 azhdar --watchdog       # check and repair if enabled (used by the timer)
 azhdar --boot           # safe apply at boot (used by the systemd unit)
 azhdar --monitor        # live dashboard for the active profile
