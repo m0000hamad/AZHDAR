@@ -67,6 +67,13 @@ azhdar_main(){
     banner
     echo -e "${YLW}No profiles found.${RST}"
     echo
+    if ! ssh_shared_key_present; then
+      echo -e "${DIM}Tip: import your SSH private key first and the new profile needs no password.${RST}"
+      if [[ "$(prompt_yesno "Set up an SSH private key now?" "N")" == "Y" ]]; then
+        menu_ssh_key || true
+      fi
+      echo
+    fi
     if [[ "$(prompt_yesno "Add a new profile now?" "Y")" == "Y" ]]; then
       profile_add_wizard
     else
