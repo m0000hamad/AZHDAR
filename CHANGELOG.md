@@ -3,7 +3,7 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
-## Unreleased
+## AZHDAR v3.2.37: SSH key before the profile, Debian 12 Mimic packages
 
 - The startup menu has a new `k) SSH private key` option, so a key can be
   imported or generated before any profile exists. With no profiles, and in

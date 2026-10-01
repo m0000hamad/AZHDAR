@@ -6,7 +6,7 @@
 
 **تانل وایرگاردی که به‌شکل TCP سفر می‌کند**
 
-![version](https://img.shields.io/badge/version-3.2.36-0E7A88)
+![version](https://img.shields.io/badge/version-3.2.37-0E7A88)
 ![platform](https://img.shields.io/badge/Ubuntu%2024.04%20%7C%20Debian%2012-informational)
 ![license](https://img.shields.io/badge/license-proprietary-9E5C0C)
 
