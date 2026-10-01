@@ -141,6 +141,14 @@ profile_add_wizard(){
     return 0
   fi
 
+  # Offer the key before the password prompt, so a first profile never needs a password.
+  if ! ssh_shared_key_present; then
+    echo -e "${DIM}No SSH private key is set. With a key you can skip the OUT password.${RST}"
+    if [[ "$(prompt_yesno "Import/generate an SSH private key now?" "N")" == "Y" ]]; then
+      menu_ssh_key || true
+    fi
+  fi
+
   # collect remote ssh and do quick preflight to suggest port
   OUT_SSH_HOST="$(prompt_host "OUT server host (SSH)" "")"
   OUT_PUBLIC_IP="$OUT_SSH_HOST"

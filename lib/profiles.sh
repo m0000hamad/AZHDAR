@@ -972,6 +972,11 @@ startup_profile_prompt(){
     echo " c) Delete ALL profiles"
     echo " d) Update AZHDAR"
     echo " e) Uninstall (keep AZHDAR)"
+    if ssh_shared_key_present; then
+      echo " k) SSH private key (active)"
+    else
+      echo " k) SSH private key (import/generate: log in without a password)"
+    fi
     echo " 0) Exit"
     hr
 
@@ -1102,6 +1107,10 @@ startup_profile_prompt(){
       d|D)
         azhdar_update_menu || true
         pause
+        ;;
+
+      k|K)
+        menu_ssh_key || true
         ;;
 
       e|E)

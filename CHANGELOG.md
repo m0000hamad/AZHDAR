@@ -3,6 +3,19 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## Unreleased
+
+- The startup menu has a new `k) SSH private key` option, so a key can be
+  imported or generated before any profile exists. With no profiles, and in
+  the "add profile" wizard, AZHDAR offers the key setup before asking for the
+  OUT SSH password.
+- Added the official Mimic 0.7.0 Debian 12 packages
+  (`bookworm_mimic_0.7.0-1_amd64.deb`, `bookworm_mimic-dkms_0.7.0-1_amd64.deb`)
+  to `assets/`, copied unmodified from the upstream
+  [hack3ric/mimic v0.7.0 release](https://github.com/hack3ric/mimic/releases/tag/v0.7.0).
+  They are the files the pinned mirror URLs already expect, so the old host is
+  no longer needed for Debian 12.
+
 ## AZHDAR v3.2.36: the watchdog can move the tunnel to a new port
 
 v3.2.35 added repair on a new tunnel port, but only by hand. The watchdog
