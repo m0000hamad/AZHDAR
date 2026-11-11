@@ -3,6 +3,17 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.40: never remove or reuse emergency SSH port 22
+
+- Port 22 is now an unconditional emergency-management reserve, even when a
+  profile records a different `IR_SSH_PORT`. It is rejected as `WG_PORT`,
+  removed from TCP forwarding, excluded from DNAT and RST-drop rules, and kept
+  open in INPUT/OUTPUT alongside the configured SSH port.
+- Profile firewall cleanup previously matched the profile tag inside its own
+  `AZHDAR:<profile>-SSH-GUARD` comment and deleted the SSH allow rule. Cleanup
+  now explicitly preserves local, remote, and legacy SSH guard rules.
+- Added a regression test covering guard-rule cleanup and port-22 reservation.
+
 ## AZHDAR v3.2.39: tolerate slow management SSH paths
 
 - Remote commands now allow up to six missed 15-second SSH keepalives instead

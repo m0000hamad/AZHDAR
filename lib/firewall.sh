@@ -21,14 +21,16 @@ allow_ir_ssh_port_local(){
   # override DNAT in PREROUTING, so setup/remove functions also explicitly
   # remove DNAT/REDIRECT rules for this port.
   normalize_ir_ssh_port
-  local p="${IR_SSH_PORT}"
-  iptables -C INPUT -p tcp --dport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
-  iptables -I INPUT 1 -p tcp --dport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
-  iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || \
-  iptables -I INPUT 1 -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
-  if command -v ufw >/dev/null 2>&1; then
-    ufw allow "${p}/tcp" >/dev/null 2>&1 || true
-  fi
+  local p
+  for p in 22 "${IR_SSH_PORT}"; do
+    iptables -C INPUT -p tcp --dport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
+    iptables -I INPUT 1 -p tcp --dport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
+    iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || \
+    iptables -I INPUT 1 -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
+    if command -v ufw >/dev/null 2>&1; then
+      ufw allow "${p}/tcp" >/dev/null 2>&1 || true
+    fi
+  done
 }
 
 _iptables_delete_lines(){
@@ -105,6 +107,8 @@ azhdar_firewall_safety_local(){
   allow_ir_ssh_port_local || true
   remove_dnat_for_port_local "${IR_SSH_PORT}" || true
   remove_rst_drop_for_port_local "${IR_SSH_PORT}" || true
+  remove_dnat_for_port_local 22 || true
+  remove_rst_drop_for_port_local 22 || true
   dedup_forward_dnat_local || true
 }
 
@@ -142,14 +146,16 @@ azhdar_ssh_guard_local(){
   normalize_ir_ssh_port || true
   azhdar_ensure_system_ssh_local || true
   allow_ir_ssh_port_local || true
-  local p="${IR_SSH_PORT:-22}"
-  _is_valid_port "$p" || return 0
-  iptables -C OUTPUT -p tcp --sport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
-  iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
-  iptables -C OUTPUT -p tcp --sport "$p" -j ACCEPT 2>/dev/null || \
-  iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT 2>/dev/null || true
-  remove_dnat_for_port_local "$p" || true
-  remove_rst_drop_for_port_local "$p" || true
+  local p
+  for p in 22 "${IR_SSH_PORT:-22}"; do
+    _is_valid_port "$p" || continue
+    iptables -C OUTPUT -p tcp --sport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
+    iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT -m comment --comment "${RULE_TAG:-$TAG}-SSH-GUARD" 2>/dev/null || \
+    iptables -C OUTPUT -p tcp --sport "$p" -j ACCEPT 2>/dev/null || \
+    iptables -I OUTPUT 1 -p tcp --sport "$p" -j ACCEPT 2>/dev/null || true
+    remove_dnat_for_port_local "$p" || true
+    remove_rst_drop_for_port_local "$p" || true
+  done
   if command -v firewall-cmd >/dev/null 2>&1; then
     firewall-cmd --add-port="${p}/tcp" >/dev/null 2>&1 || true
     firewall-cmd --permanent --add-port="${p}/tcp" >/dev/null 2>&1 || true
@@ -227,6 +233,10 @@ azhdar_ssh_guard_all(){
 ssh_guard_remote_conflict(){
   [[ "${WG_MODE:-classic}" == "account" ]] && return 0
   normalize_out_ssh_port || true
+  if [[ "${WG_PORT:-}" == "22" ]]; then
+    err "WG_PORT 22 is permanently reserved for emergency SSH access; choose another tunnel public port."
+    return 1
+  fi
   if [[ -n "${WG_PORT:-}" && -n "${OUT_SSH_PORT:-}" && "${WG_PORT}" == "${OUT_SSH_PORT}" ]]; then
     err "WG_PORT ${WG_PORT} equals OUT SSH port ${OUT_SSH_PORT}; refusing because it can lock you out of the OUT server. Choose another tunnel public port."
     return 1
@@ -237,7 +247,7 @@ ssh_guard_remote_conflict(){
 # -------------------- Firewall / forwarding --------------------
 allow_mimic_port_local(){
   azhdar_firewall_safety_local || true
-  if [[ -n "${IR_SSH_PORT:-}" && "${WG_PORT:-}" == "${IR_SSH_PORT}" ]]; then
+  if [[ "${WG_PORT:-}" == "22" || ( -n "${IR_SSH_PORT:-}" && "${WG_PORT:-}" == "${IR_SSH_PORT}" ) ]]; then
     err "WG_PORT ${WG_PORT} equals the IR SSH protected port; refusing to open/use it as tunnel port."
     return 1
   fi
@@ -280,7 +290,7 @@ allow_forward_ports_local(){
   local p
   for p in ${FORWARD_TCP_PORTS//,/ }; do
     [[ -z "$p" ]] && continue
-    if [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]]; then
+    if [[ "$p" == "22" || ( -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ) ]]; then
       warn "Skipping TCP allow for IR SSH protected port ${p}."
       continue
     fi
@@ -306,7 +316,7 @@ remove_allow_rules_local(){
   while read -r line; do
     cmd="${line/-A /-D }"
     printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
-  done < <(iptables -S INPUT 2>/dev/null | grep -F "${RULE_TAG:-$TAG}" || true)
+  done < <(iptables -S INPUT 2>/dev/null | grep -F "${RULE_TAG:-$TAG}" | grep -vF -- "${RULE_TAG:-$TAG}-SSH-GUARD" || true)
 
   # Legacy cleanup (v2.0.0): rules were tagged with AZHDAR (global). Remove only ports from this profile.
   _remove_legacy_allow_rules_local || true
@@ -317,7 +327,7 @@ remove_allow_rules_remote(){
   step "Remove remote allow rules (best-effort)"
   ssh_run_stdin_env_root_best_effort "TAG_MARK=${RULE_TAG:-$TAG}" "TAG_LEGACY=${TAG}" "WG_PORT=${WG_PORT}" "VLESS_DST_PORT=${VLESS_DST_PORT:-}" "WG_IF=${WG_IF}" <<'REMOTE' >/dev/null 2>&1 || true
 set -euo pipefail
-iptables -S INPUT 2>/dev/null | grep -F "${TAG_MARK}" | while read -r line; do
+iptables -S INPUT 2>/dev/null | grep -F "${TAG_MARK}" | grep -vF -- "${TAG_MARK}-SSH-GUARD" | while read -r line; do
   cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
 done
 
@@ -391,7 +401,7 @@ setup_forward_ir(){
   for p in "${tcp_ports[@]}"; do
     p="$(echo "$p" | xargs)"
     [[ -z "$p" ]] && continue
-    if [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]]; then
+    if [[ "$p" == "22" || ( -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ) ]]; then
       warn "Skipping DNAT for IR SSH protected port ${p}."
       remove_dnat_for_port_local "$p" || true
       continue
@@ -461,6 +471,8 @@ remove_forward_rules_local(){
   normalize_ir_ssh_port || true
   remove_dnat_for_port_local "${IR_SSH_PORT}" || true
   remove_rst_drop_for_port_local "${IR_SSH_PORT}" || true
+  remove_dnat_for_port_local 22 || true
+  remove_rst_drop_for_port_local 22 || true
 
   ok "Forwarding rules removed (best-effort)."
 }
@@ -517,7 +529,7 @@ remove_forwarding_remote(){ remove_forward_rules_remote; }
 
 setup_rst_drop_local(){
   normalize_ir_ssh_port || true
-  if [[ -n "${IR_SSH_PORT:-}" && "${WG_PORT:-}" == "${IR_SSH_PORT}" ]]; then
+  if [[ "${WG_PORT:-}" == "22" || ( -n "${IR_SSH_PORT:-}" && "${WG_PORT:-}" == "${IR_SSH_PORT}" ) ]]; then
     err "Refusing to add RST-drop on IR SSH protected port ${IR_SSH_PORT}."
     return 1
   fi
@@ -580,13 +592,13 @@ _remove_legacy_allow_rules_local(){
     [[ -n "$p" ]] || continue
     while read -r line; do
       cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
-    done < <(iptables -S INPUT 2>/dev/null | grep -F "$legacy" | grep -F -- "--dport ${p}" || true)
+    done < <(iptables -S INPUT 2>/dev/null | grep -F "$legacy" | grep -vF -- "-SSH-GUARD" | grep -F -- "--dport ${p}" || true)
   done
   for p in ${FORWARD_UDP_PORTS//,/ }; do
     [[ -n "$p" ]] || continue
     while read -r line; do
       cmd="${line/-A /-D }"; printf '%s' "$cmd" | xargs iptables 2>/dev/null || true
-    done < <(iptables -S INPUT 2>/dev/null | grep -F "$legacy" | grep -F -- "--dport ${p}" || true)
+    done < <(iptables -S INPUT 2>/dev/null | grep -F "$legacy" | grep -vF -- "-SSH-GUARD" | grep -F -- "--dport ${p}" || true)
   done
 }
 

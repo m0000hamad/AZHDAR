@@ -309,6 +309,10 @@ protect_ir_ssh_port(){
   if [[ -n "${FORWARD_TCP_PORTS:-}" ]]; then
     local old_tcp="${FORWARD_TCP_PORTS}"
     FORWARD_TCP_PORTS="$(ports_csv_remove_port "${FORWARD_TCP_PORTS}" "${IR_SSH_PORT}")"
+    # Port 22 is an unconditional emergency-management reserve. Even when a
+    # profile records a custom SSH port incorrectly, installation must never
+    # turn the default recovery port into DNAT.
+    FORWARD_TCP_PORTS="$(ports_csv_remove_port "${FORWARD_TCP_PORTS}" "22")"
     if [[ "${old_tcp}" != "${FORWARD_TCP_PORTS}" ]]; then
       warn "IR SSH port ${IR_SSH_PORT} removed from TCP forwarding ports."
       if [[ -n "${PROFILE:-}" ]]; then
@@ -336,6 +340,7 @@ ports_wg_port_candidate_ok(){
   local p="${1:-}"
   [[ "$p" =~ ^[0-9]{1,5}$ ]] || return 1
   (( p >= 1 && p <= 65535 )) || return 1
+  [[ "$p" == "22" ]] && return 1
   [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]] && return 1
   [[ -n "${OUT_SSH_PORT:-}" && "$p" == "${OUT_SSH_PORT}" ]] && return 1
   [[ -n "${PORT_REG_PROFILE[tcp:${p}]:-}" ]] && return 1
@@ -408,6 +413,7 @@ ports_forward_tcp_candidate_ok(){
   local p="${1:-}"
   [[ "$p" =~ ^[0-9]{1,5}$ ]] || return 1
   (( p >= 1 && p <= 65535 )) || return 1
+  [[ "$p" == "22" ]] && return 1
   [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]] && return 1
   [[ -n "${WG_PORT:-}" && "$p" == "${WG_PORT}" ]] && return 1
   [[ -n "${PORT_REG_PROFILE[tcp:${p}]:-}" ]] && return 1
@@ -496,7 +502,7 @@ ports_auto_fix_forward_tcp_ports(){
     reason=""
     if ! [[ "$p" =~ ^[0-9]{1,5}$ ]] || (( p < 1 || p > 65535 )); then
       reason="invalid"
-    elif [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]]; then
+    elif [[ "$p" == "22" || ( -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ) ]]; then
       reason="IR SSH protected port"
     elif [[ -n "${WG_PORT:-}" && "$p" == "${WG_PORT}" ]]; then
       reason="tunnel port"
@@ -580,6 +586,10 @@ ports_validate_current_or_warn(){
   fi
 
   # Never allow the tunnel public port to take over the IR SSH management port.
+  if [[ -n "${WG_PORT:-}" && "${WG_PORT}" == "22" ]]; then
+    warn "WG_PORT 22 is permanently reserved for emergency SSH access. Choose another tunnel port."
+    bad=1
+  fi
   if [[ -n "${WG_PORT:-}" && -n "${IR_SSH_PORT:-}" && "${WG_PORT:-}" == "${IR_SSH_PORT}" ]]; then
     warn "WG_PORT ${WG_PORT} is the IR SSH exempt port. Choose another tunnel port."
     local sug_ir; sug_ir="$(suggest_wg_port || true)"
@@ -625,7 +635,7 @@ ports_validate_current_or_warn(){
       bad=1
       continue
     fi
-    if [[ -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ]]; then
+    if [[ "$p" == "22" || ( -n "${IR_SSH_PORT:-}" && "$p" == "${IR_SSH_PORT}" ) ]]; then
       warn "Forward TCP port ${p} is the IR SSH exempt port and will be skipped."
       bad=1
     fi
@@ -758,7 +768,8 @@ ports_tunnel_port_problems(){
     echo "not a valid port"
     return 0
   fi
-  [[ "$p" == "${IR_SSH_PORT:-22}" ]] && echo "IR SSH port"
+  [[ "$p" == "22" ]] && echo "emergency SSH port"
+  [[ "$p" == "${IR_SSH_PORT:-22}" && "$p" != "22" ]] && echo "IR SSH port"
   [[ "$p" == "${OUT_SSH_PORT:-22}" ]] && echo "OUT SSH port"
   ports_csv_contains "${FORWARD_TCP_PORTS:-}" "$p" && echo "public TCP forward port of this profile"
   ports_csv_contains "${FORWARD_UDP_PORTS:-}" "$p" && echo "public UDP forward port of this profile"

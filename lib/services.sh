@@ -45,7 +45,7 @@ restart_svc_remote(){
 
 services_guard_local_ports(){
   normalize_ir_ssh_port || true
-  if [[ -n "${IR_SSH_PORT:-}" && -n "${WG_PORT:-}" && "${WG_PORT}" == "${IR_SSH_PORT}" ]]; then
+  if [[ "${WG_PORT:-}" == "22" || ( -n "${IR_SSH_PORT:-}" && -n "${WG_PORT:-}" && "${WG_PORT}" == "${IR_SSH_PORT}" ) ]]; then
     err "WG_PORT ${WG_PORT} equals the IR SSH protected port; local services will not be started/restarted to avoid SSH lockout. Change WG_PORT first."
     return 1
   fi
