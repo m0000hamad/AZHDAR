@@ -3,6 +3,14 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.38: install Mimic's bubblewrap build dependency
+
+- Mimic 0.7.0 invokes `bwrap` while DKMS builds its kernel module, but AZHDAR
+  did not install the `bubblewrap` package. Fresh Ubuntu 26.04 hosts therefore
+  stopped with `make: bwrap: No such file or directory` and left `mimic` and
+  `mimic-dkms` half-configured. Both local and remote Mimic installers now
+  install and verify `bubblewrap` with the other required build dependencies.
+
 ## AZHDAR v3.2.37: SSH key before the profile, Debian 12 Mimic packages
 
 - The startup menu has a new `k) SSH private key` option, so a key can be

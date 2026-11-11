@@ -368,7 +368,7 @@ azhdar_kernel_header_candidates_local(){
 azhdar_install_mimic_build_deps_local(){
   # Self-healing build dependency installer for Mimic-DKMS.
   # Keep the first path identical to the command that works reliably by hand:
-  #   apt install -y dkms build-essential "linux-headers-$(uname -r)"
+  #   apt install -y dkms build-essential bubblewrap "linux-headers-$(uname -r)"
   # Optional helper packages are installed only after the core deps are present,
   # so missing bpftool/pahole/dwarves cannot falsely fail Mimic preparation.
   export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 APT_LISTCHANGES_FRONTEND=none
@@ -381,7 +381,7 @@ azhdar_install_mimic_build_deps_local(){
   azhdar_apt_self_heal_local >>"$log" 2>&1 || true
 
   # Exact fast path: this mirrors the manual fix users run successfully.
-  if azhdar_apt_get install -y dkms build-essential "linux-headers-${kver}" >>"$log" 2>&1; then
+  if azhdar_apt_get install -y dkms build-essential bubblewrap "linux-headers-${kver}" >>"$log" 2>&1; then
     apt_install_retry xz-utils lz4 curl ca-certificates pahole dwarves bpftool >>"$log" 2>&1 || true
     return 0
   fi
@@ -392,7 +392,7 @@ azhdar_install_mimic_build_deps_local(){
 
   # Retry the same exact command once after refresh; do not replace it with only
   # generic headers unless it truly remains unavailable.
-  if azhdar_apt_get install -y dkms build-essential "linux-headers-${kver}" >>"$log" 2>&1; then
+  if azhdar_apt_get install -y dkms build-essential bubblewrap "linux-headers-${kver}" >>"$log" 2>&1; then
     apt_install_retry xz-utils lz4 curl ca-certificates pahole dwarves bpftool >>"$log" 2>&1 || true
     return 0
   fi
@@ -401,9 +401,9 @@ azhdar_install_mimic_build_deps_local(){
   azhdar_apt_self_heal_local >>"$log" 2>&1 || true
 
   # Core deps must succeed independently from optional tooling.
-  if ! azhdar_apt_get install -y dkms build-essential >>"$log" 2>&1; then
+  if ! azhdar_apt_get install -y dkms build-essential bubblewrap >>"$log" 2>&1; then
     azhdar_apt_get -f install -y >>"$log" 2>&1 || true
-    azhdar_apt_get install -y dkms build-essential >>"$log" 2>&1 || true
+    azhdar_apt_get install -y dkms build-essential bubblewrap >>"$log" 2>&1 || true
   fi
 
   for hdr in $(azhdar_kernel_header_candidates_local | awk 'NF && !seen[$0]++'); do
@@ -414,7 +414,7 @@ azhdar_install_mimic_build_deps_local(){
   # broken when dkms/build-essential/exact headers are otherwise usable.
   apt_install_retry xz-utils lz4 curl ca-certificates pahole dwarves bpftool >>"$log" 2>&1 || true
 
-  if have_cmd dkms && dpkg -s build-essential >/dev/null 2>&1; then
+  if have_cmd dkms && dpkg -s build-essential bubblewrap >/dev/null 2>&1; then
     if [[ -e "/lib/modules/${kver}/build" ]]; then
       return 0
     fi
@@ -533,7 +533,7 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 A
 # No unconditional apt update here; build-dep installer refreshes package lists only if needed.
 
 # Ensure build deps for Mimic-DKMS (dkms + toolchain + matching headers)
-if ! have_cmd dkms || ! dpkg -s build-essential >/dev/null 2>&1 || [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
+if ! have_cmd dkms || ! dpkg -s build-essential bubblewrap >/dev/null 2>&1 || [[ ! -e "/lib/modules/$(uname -r)/build" ]]; then
   info "Installing/repairing DKMS build deps (dkms, build-essential, headers)..."
 fi
 azhdar_install_mimic_build_deps_local || die "Cannot install/repair Mimic build deps automatically. See ${LOG_FILE}."
@@ -680,14 +680,14 @@ aptq(){ DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1 
 # Keep this stage light and non-blocking.  apt/dpkg on new Ubuntu images often
 # runs unattended-upgrade for several minutes.  Try the required deps, but do
 # not abort here; package install + later service checks decide the real result.
-if ! command -v dkms >/dev/null 2>&1 || ! dpkg -s build-essential >/dev/null 2>&1; then
+if ! command -v dkms >/dev/null 2>&1 || ! dpkg -s build-essential bubblewrap >/dev/null 2>&1; then
   echo "[i] Installing DKMS build deps (best-effort; non-fatal)..."
 fi
 # First try the exact command that reliably fixes DKMS on fresh Ubuntu hosts.
-aptq install -y dkms build-essential "linux-headers-$(uname -r)" >/dev/null 2>&1 || {
+aptq install -y dkms build-essential bubblewrap "linux-headers-$(uname -r)" >/dev/null 2>&1 || {
   aptq -f install -y >/dev/null 2>&1 || true
   aptq update -y >/dev/null 2>&1 || true
-  aptq install -y dkms build-essential "linux-headers-$(uname -r)" >/dev/null 2>&1 || true
+  aptq install -y dkms build-essential bubblewrap "linux-headers-$(uname -r)" >/dev/null 2>&1 || true
 }
 # Optional tooling must not make the remote install fail by itself.
 aptq install -y xz-utils lz4 curl ca-certificates pahole dwarves bpftool >/dev/null 2>&1 || true
