@@ -623,7 +623,7 @@ ssh_exec_cmd_on(){
     -o CheckHostIP=no
     -o UpdateHostKeys=no
     -o ServerAliveInterval=15
-    -o ServerAliveCountMax=2
+    -o ServerAliveCountMax=6
     -o ConnectTimeout="${AZHDAR_SSH_CONNECT_TIMEOUT:-8}"
     -o KbdInteractiveAuthentication=yes
     -o PasswordAuthentication=yes
@@ -746,7 +746,7 @@ ssh_exec_stdin_on(){
     -o CheckHostIP=no
     -o UpdateHostKeys=no
     -o ServerAliveInterval=15
-    -o ServerAliveCountMax=2
+    -o ServerAliveCountMax=6
     -o ConnectTimeout="${AZHDAR_SSH_CONNECT_TIMEOUT:-8}"
     -o KbdInteractiveAuthentication=yes
     -o PasswordAuthentication=yes

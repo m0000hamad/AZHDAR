@@ -3,6 +3,13 @@
 Release notes carried over from the README. Newest first.
 Each release is also a git tag, so `git show v3.2.14` gives that exact build.
 
+## AZHDAR v3.2.39: tolerate slow management SSH paths
+
+- Remote commands now allow up to six missed 15-second SSH keepalives instead
+  of two. Intermittently slow IR-to-OUT paths could previously return empty OS
+  probes or terminate a long package installation with `rc=255`, producing
+  false blockers such as missing `apt-get`, `systemctl`, or architecture.
+
 ## AZHDAR v3.2.38: install Mimic's bubblewrap build dependency
 
 - Mimic 0.7.0 invokes `bwrap` while DKMS builds its kernel module, but AZHDAR
